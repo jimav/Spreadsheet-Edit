@@ -7,33 +7,33 @@
 use strict; use warnings FATAL => 'all'; use v5.20;
 use utf8;
 
-package Text::CSV::Edit::Preload;
+package Spreadsheet::Edit::Preload;
 
 
 use version 0.77; our $VERSION = version->declare(sprintf "v%s", q$Revision: 1.4 $ =~ /(\d[.\d]+)/);
 
 use Carp;
 use Import::Into;
-require Text::CSV::Edit;
-our @CARP_NOT = ('Text::CSV::Edit');
+require Spreadsheet::Edit;
+our @CARP_NOT = ('Spreadsheet::Edit');
 
 sub import {
   my $pkg = shift;  # that's us
   my ($inpath, %opts) = @_;
   my $callpkg = caller($Exporter::ExportLevel);
 
-  # Import Text::CSV::Edit and the usual variables for the user
-  Text::CSV::Edit->import::into($callpkg, ':DEFAULT', ':STDVARS');
+  # Import Spreadsheet::Edit and the usual variables for the user
+  Spreadsheet::Edit->import::into($callpkg, ':DEFAULT', ':STDVARS');
 
   # Load the spreadsheet and tie column variable in caller's package
-  my $sh = Text::CSV::Edit->new(%opts);
+  my $sh = Spreadsheet::Edit->new(%opts);
   my $title_rx_arg = delete $opts{title_rx};
   $sh->read_spreadsheet($inpath, %opts);
   $sh->title_rx($title_rx_arg);  # undef if no titles 
-  Text::CSV::Edit::package_active_sheet($callpkg, $sh);
+  Spreadsheet::Edit::package_active_sheet($callpkg, $sh);
   # Actually safe need no longer be specified explicitly because it 
   # will be automatically assumed while ${^GLOBAL_PHASE} is "START".
-  # See code in Text::CSV::Edit::OO::tie_column_vars.
+  # See code in Spreadsheet::Edit::OO::tie_column_vars.
   $sh->tie_column_vars({package => $callpkg, safe => 1, %opts});
 }
 
@@ -49,9 +49,9 @@ Text::Csv::Edit::Preload - load and auto-import column variables
 
 =head1 SYNOPSIS
 
-  use Text::CSV::Edit::Preload PATH, [OPTIONS...]
+  use Spreadsheet::Edit::Preload PATH, [OPTIONS...]
 
-  use Text::CSV::Edit::Preload "/path/to/file.xls", sheet => "Sheet1",
+  use Spreadsheet::Edit::Preload "/path/to/file.xls", sheet => "Sheet1",
                                title_rx => 0;
 
   apply {
@@ -64,7 +64,7 @@ A spreadsheet or csv file is immediately
 loaded and tied variables corresponding to columns are created 
 and imported into the caller's package.  These variables may
 be used in C<apply> operations to access cells in the current row as
-described in C<Text::CVS::Edit>.
+described in C<Spreadsheet::Edit>.
 
 These imported variables have names derived from column titles 
 (if C<title_rx> is specified), as well as $A, $B, etc. corresponding to
@@ -72,7 +72,7 @@ to absolute columns.
 
 The example above is equivalent to
 
-  use Text::CSV::Edit qw(:DEFAULT :STDVARS);
+  use Spreadsheet::Edit qw(:DEFAULT :STDVARS);
   BEGIN {
     options ... ;  
     read_spreadsheet "/path/to/file.xls", sheet => "Sheet1";
@@ -100,5 +100,9 @@ is checked to avoid clobbering special Perl variables such as C<STDOUT>).
 In such cases the column can be accessed using the appropriate
 spreadsheet-letter variable $A, etc. (assuming I<that> name does 
 not clash with something).
+
+=head1 SEE ALSO
+
+Spreadsheet::Edit
 
 =cut
