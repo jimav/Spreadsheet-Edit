@@ -71,7 +71,7 @@ BEGIN {
       push @errs, sprintf("** WAIT STATUS = 0x%04X\n", $wstat) if $wstat != 0;
       push @errs, "Expected no output (w/o verbose or debug)" if $output ne "";
       diag($_) foreach(@errs);
-      ok (@errs == 0, "The whole shebang (without verbose or debug)") or die;
+      ok (@errs == 0, "The whole shebang silently") or die;
     }
     {
       # Run with --debug; croaks should not show internal packages
@@ -468,12 +468,14 @@ confess "BUG3 title=",vis($title)," colx=",hvis(%colx) if ! defined($colx{$title
     }
   }
   check_other_package();
-}
+}#check_titles
 
 sub check_both($) {
+confess "bug" unless defined $title_rx; ###TEMP
   my $letters = shift;  # indicates current column ordering
 
-  scope_guard { options(verbose => options(verbose => 0)) };
+  my $saved_options = options(verbose => 0);
+  scope_guard { options(verbose => $saved_options) };
 
   croak "Expected $num_cols columns" unless length($letters) == $num_cols;
 
@@ -549,14 +551,63 @@ package datasource_autodetect1_test {
   main::check_no_sheet;
   options silent => $main::silent, verbose => $main::debug ;
   read_spreadsheet $main::infile;
-  title_rx {last_cx => 2}; # cx 3 has an empty title
-  die dvis 'bug2 $title_rx' unless title_rx() == 1;
+
   { (my $orig_ds = data_source) =~ /\Q$main::infile\E/ or die;
     data_source "New data source";
     data_source eq "New data source" or die;
     (data_source $orig_ds) eq $orig_ds or die;
     data_source eq $orig_ds or die;
   }
+  
+  # Title row autodetect tests
+  my $s = sheet();
+  title_rx {last_cx => 2}; # cx 3 has an empty title
+
+  # autodetect upon tie_column_vars ':all'
+  title_rx undef;
+  die "bug0" if defined $$s->{title_rx};
+  tie_column_vars ':all';
+  die "bug1".ivis(' $$s') unless defined title_row();
+  die "bug2".ivis(' $$s') unless title_rx() == 1;
+
+  # autodetect upon calling title_rx()
+  title_rx undef;
+  die "bug0" if defined $$s->{title_rx};
+  die "bug1".ivis(' $$s') unless defined title_row();
+  die "bug2".ivis(' $$s') unless title_rx() == 1;
+  
+  # autodetect upon reading $title_rx
+  title_rx undef;
+  die "bug0" if defined $$s->{title_rx};
+  die "bug" unless $title_rx == 1;
+
+  # autodetect upon calling title_rx()
+  title_rx undef;
+  die "bug0" if defined $$s->{title_rx};
+  die "bug" unless title_rx() == 1;
+  
+  # autodetect upon reading $title_row
+  title_rx undef;
+  die "bug0" if defined $$s->{title_rx};
+  die "bug1" unless defined $title_row;
+  die "bug2" unless $title_row->{B} eq "Btitle";
+
+  # autodetect upon referencing tied column var
+  title_rx undef;
+  apply_torx {
+    die "bug0" if defined $$s->{title_rx};
+    our $Btitle;
+    die "bug" unless $Btitle eq "B2";
+    die "bug2" unless defined $$s->{title_rx};
+  } 2; 
+  
+  # Verify disabling autodetect
+  title_rx {last_cx => 2, enable => 0};
+  title_rx undef;
+  die "bug0" if defined $$s->{title_rx};
+  die "bug1".ivis(' $$s') if defined title_row();
+  title_rx {last_cx => 2};  # re-enable title row
+  #die "bug1".ivis(' $$s') unless defined title_row();
 };
 
 # Test auto-detecting title row when alias() is called
@@ -576,7 +627,7 @@ package autodetect_test3 {
   use Data::Dumper::Interp;
   main::check_no_sheet;
   options silent => $main::silent, verbose => $main::debug;
-  title_rx {last_cx => 2}, "enable"; # redundant "enable" ; cx 3 : empty title
+  title_rx {last_cx => 2, enable => 1}; # redundant "enable" ; cx 3 : empty title
   read_spreadsheet $main::infile;
   die "bug1" unless sheet()->[2]->{Btitle} eq "B2";
   die "bug2" unless title_rx == 1;
@@ -593,6 +644,30 @@ package autodetect_test4 {
   read_spreadsheet $infile;
   apply_torx { die "bug1" unless $Btitle eq "B2" } 2;
   die "bug2" unless title_rx == 1;
+}
+
+# RE-auto-detect after manually modifying a title
+# Also check changing sheet in another package
+package autodetect_test5 { 
+  use Spreadsheet::Edit qw(:all);
+  use Data::Dumper::Interp;
+  use Guard qw(scope_guard);
+  main::check_no_sheet;
+  options silent => $main::silent, verbose => $main::debug;
+  title_rx {last_cx => 2}; # cx 3 has an empty title
+  read_spreadsheet $infile;
+  my $s = sheet;
+ 
+  my $saved_main_sheet = package_active_sheet("main");
+  scope_guard { sheet {package => "main"}, $saved_main_sheet };
+  sheet {package => "main"}, $s;
+
+  main::check_both('ABCDEFGH');
+  my $tx = title_rx;
+  $rows[$tx]{B} = "New Fancy Title";
+  eval{ main::check_both('ABCDEFGH') }; main::verif_eval_err(__LINE__);
+  title_rx undef;
+  die "bug0" unless $rows[$tx]{"New Fancy Title"} eq "New Fancy Title";
 }
 
 # Check that tie_column_vars will refuse to tie pre-existing variables 
@@ -628,17 +703,13 @@ package Titleclash::test::Multilevel {
   eval { tie_column_vars {safe=>1}, qw($Btitle) }; main::verif_eval_err(__LINE__);
 }
 
-# Test successful tie_column_vars ':auto' in BEGIN{},
+# Test successful tie_column_vars ':all' in BEGIN{},
 # implicitly importing all valid variables.
 # We will use these (not explicitly declared) variables later.
 BEGIN {
   check_no_sheet;
   options silent => $silent, verbose => $debug; # auto-create sheet
   read_spreadsheet $infile;
-
-  # Verify disabling autodetect
-  title_rx "disable";
-  eval { $_ = alias "_dummy" => "Btitle" }; verif_eval_err(__LINE__);
 
   { my $s=sheet(); dprint dvis('After reading $infile\n   $$s->{rows}\n   $$s->{colx_desc}\n'); }
 
@@ -670,7 +741,7 @@ BEGIN {
   
   # Auto-tie all columns, plus the variables mentioned which will become
   # valid later (if not tied here in BEGIN{} then the security check fails).
-  tie_column_vars qw( :auto Ititle Jtitle Ktitle AAAtitle );
+  tie_column_vars qw( :all Ititle Jtitle Ktitle AAAtitle );
 
   { my $cxliststr = join " ", 
         spectocx qw(Aalias Aalia2 Dalias Ealias Falias),
@@ -687,6 +758,7 @@ apply_torx {
 # Pre-existing aliases remain pointing to their original columns.
 alias Halia3 => 'H';
 
+#say dvis '##AAA ${sheet()}';
 die "Halia3 gave wrong val"  unless sheet()->[2]->{Halia3} eq "E2";
 die "Halias stopped working" unless sheet()->[2]->{Halias} eq "H2";
 die "Halia2 stopped working" unless sheet()->[2]->{Halias} eq "H2";
@@ -771,6 +843,8 @@ foreach ([f => 0], [flt => 0, f => 1, flt => undef], [lt => $#rows],
     last_data_rx  $saved[1];
     title_rx      $saved[2];
   };
+  local ${sheet()}->{autodetect_opts}->{enable} = 0;
+  title_rx { enable => 0 };  # disable autodetect
   while (@pairs) {
     my ($key,$val) = @pairs[0,1]; @pairs = @pairs[2..$#pairs];
     if ($key =~ s/f//) {
@@ -1040,7 +1114,7 @@ foreach ([f => 0], [flt => 0, f => 1, flt => undef], [lt => $#rows],
 
     # replace with no sheet
     $p = sheet(undef);
-    bug unless $p == $sheet1;
+    bug unless defined($p) && $p == $sheet1;
     bug if defined $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__};
     bug if defined eval { my $x = $num_cols; } ; # expect undef or croak
     bug if defined eval { my $x = $A_title;   } ; # expect undef or croak

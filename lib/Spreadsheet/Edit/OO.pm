@@ -24,13 +24,10 @@ package Spreadsheet::Edit::OO;
 use Exporter 'import';
 our @EXPORT_OK = qw(oops %pkg2currsheet); # for Spreadsheet::Edit.pm
 
-use Data::Dumper::Interp
-  qw(vis avis hvis visq avisq hvisq alvis alvisq hlvis hlvisq
-     ivis ivisq dvis dvisq u qsh quotekey);
+use Data::Dumper::Interp;
 
 use Carp;
 our @CARP_NOT = qw(Spreadsheet::Edit 
-                   Tie::Indirect 
                    Tie::Indirect::Array Tie::Indirect::Hash 
                    Tie::Indirect::Scalar
                   );
@@ -133,7 +130,10 @@ sub __fill($;$$) {
       $buf .= (" " x $indent);
       $llen = $indent;
     } else {
-      $buf .= " " if substr($buf,-1) =~ /\S/;
+      if (substr($buf,-1) =~ /\S/) {
+        $buf .= " ";
+        ++$llen;
+      }
     }
     $buf .= $_;
     $llen += length();
@@ -236,6 +236,17 @@ sub _validate_ident($) {
   $_[0]
 }
 
+# Check that an option hash has only valid keys
+sub __validate_opthash($$;$) {
+  my ($opthash, $valid_keys, $optdesc) = @_;
+  return unless defined $opthash; # silently accept undef
+  foreach my $k (keys %$opthash) {
+    croak "Unrecognized ",($optdesc//"option")," '$k'" 
+      unless first{$_ eq $k} @$valid_keys;
+  }
+  $opthash
+}
+
 sub __validate_nat($;$) {
   croak(($_[1]//"argument")." must be a positive integer",
         " (not ".u($_[0]).")")
@@ -335,7 +346,7 @@ sub new {
       num_cols         => delete $opts{num_cols} // undef,
       caller_level     => $caller_level,
       cmd_nesting      => $cmd_nesting,
-      autodetect_opts  => {},     # initially enable auto-detect of title_rx
+      autodetect_opts  => {},     # enabled by default
 
       # %colx maps titles, aliases (automatic and user-defined), and
       # spreadsheet column lettercodes to the corresponding column indicies.
@@ -370,7 +381,7 @@ sub new {
     $self->_rows_replaced();
   }
 
-  $self->logmethifv( \$opts_str, \" →  ", \"$self");
+  $self->_logmethifv( \$opts_str, \" : ", \"$self");
   $$self->{caller_level} = 0;
   $$self->{cmd_nesting} = 0;
 
@@ -573,15 +584,14 @@ sub tie_column_vars {
   # Any remaining args specify variable names matching
   # alias names, either user-defined or automatic.
   
-  croak "tie_column_vars without arguments (did you intend to use ':auto'?)"
+  croak "tie_column_vars without arguments (did you intend to use ':all'?)"
     unless @_;
 
   local $$self->{silent}  = $opts->{silent} // $$self->{silent};
   local $$self->{verbose} = $opts->{verbose} // $$self->{verbose};
   local $$self->{debug}   = $opts->{debug} // $$self->{debug};
 
-  my ($title_rx, $rows, $debug, $num_cols)
-    = @$$self{qw/title_rx rows debug num_cols/};
+  my ($rows, $debug, $num_cols) = @$$self{qw/rows debug num_cols/};
 
   my $pkg = $opts->{package} // $self->_caller_pkg;
 
@@ -592,23 +602,24 @@ sub tie_column_vars {
     s/^\$//;
   }
 
-
-  # With ':auto' tie all possible variables, now and in the future;
+  # With ':all' tie all possible variables, now and in the future;
   # if called during BEGIN{} check that variables do not already
   # exist (the user can explicitly override with {safe => <bool>} .  
   my $safe = $opts->{safe} // (${^GLOBAL_PHASE} eq "START");
   my $parms = [$safe, ($self->_caller())[1,2]]; # [safearg, file, lineno]
 
-  if (delete $tokens{':auto'}) {
+  if (delete $tokens{':all'}) {
     # Remember parameters for tie operations which might occur later
     $$self->{pkg2tieall}->{$pkg} = $parms;
+    $self->_autodetect_title_rx_ifneeded_cl1();
     push @varnames, sort $self->_all_valid_idents;
   }
+  croak "Unrecognized token in arguments: ",avis(keys %tokens) if %tokens;
 
   my $r = $self->_tie_col_vars($pkg, $parms, @varnames);
 
   my $pfx = ($r == __TCV_REDUNDANT ? "[ALL REDUNDANT] " : "");
-  $self->logmethifv(\$pfx,\__fmt_uqarray(keys %tokens, @varnames), \" in package $pkg");
+  $self->_logmethifv(\$pfx,\__fmt_uqarray(keys %tokens, @varnames), \" in package $pkg");
 }#tie_column_vars
 
 #
@@ -621,7 +632,7 @@ sub colx_desc { ${&__selfonly}->{colx_desc} }
 sub data_source {
   my $self = shift;
   return $$self->{data_source} if @_ == 0;  # 'get' request
-  $self->logmethifv(@_);
+  $self->_logmethifv(@_);
   croak "Too many args" unless @_ == 1;
   $$self->{data_source} = $_[0]
 }
@@ -643,8 +654,10 @@ sub input_encoding {
 }
 # See below for title_rx()
 sub title_row {
-  my ($title_rx, $rows) = @${&__selfonly}{qw/title_rx rows/};
-  defined($title_rx) ? $rows->[$title_rx] : undef
+  my $self = $_[0];
+  local $$self->{caller_level} = $$self->{caller_level} + 1;
+  my $title_rx = &title_rx;  # auto-detects. Pass thru {OPTIONS} if present
+  defined($title_rx) ? $$self->{rows}->[$title_rx] : undef
 }
 sub rx { ${ &__selfonly }->{current_rx} }
 sub current_row {
@@ -771,9 +784,13 @@ sub fmt_list(@) {
 #   with repeated ">>..." if cmd_nesting_level > 1.
 #
 # ITEMs should NOT include a terminal newline.
-sub logfunc($$@) {
+sub __logfuncmsg($$@) {
   my ($cl, $nesting, @items) = @_;
-  my $msg = fmt_list(@items);
+#  # Don't show the first item if it looks like an empty {OPTIONS} hashref
+#  # REALLY??
+#  shift @items
+#    if @items && ref($items[0]) eq "HASH" && ! %{ $items[0] };
+  (my $msg = fmt_list(@items)) =~ s/^ +//; # will follow a space
   my (undef,$fn,$ln,$subname) = caller($cl+1);  # +1 for calling us
   unless (defined($subname) && defined($fn)) {
     #local $Carp::MaxArgNums = '0 but true'; # omit args from backtrace
@@ -795,7 +812,7 @@ sub logfunc($$@) {
   (">" x ($nesting||1))."[$fn:$ln] $subname $msg\n"
 }
 
-# $obj->logmethmsg(extra_levels, STRINGs...)
+# $obj->_logmethmsg(extra_levels, STRINGs...)
 #
 # RETURNS: ">... [callerfile:callerlno] calledsubname STRINGs\n"
 #
@@ -803,26 +820,28 @@ sub logfunc($$@) {
 # (+1 to account for the call to us).
 #
 # Unconditionally appends \n.
-sub logmethmsg {
-  oops "missing extra_levels arg" unless @_ > 1 && $_[1] =~ /^\d+$/;
+sub _logmethmsg {  # $self->_logmethmsg($extra_level, @items)
   my $self = shift;
-  my $extra_levels = shift;
-  logfunc( $$self->{caller_level}+$extra_levels+1,  # *** was +1+1,
-           $$self->{cmd_nesting},
-           @_ );
+  my $extra_level = shift;
+  oops "missing extra_level arg" unless u($extra_level) =~ /^\d+$/;
+  __logfuncmsg( $$self->{caller_level}+$extra_level+1,
+                $$self->{cmd_nesting},
+                @_ );
 }
-sub logmeth {
+sub _logmeth {
   my $self = shift;
-  # Don't show the first item if it looks like an empty {OPTIONS} hashref
-  shift @_
-    if @_ && ref($_[0]) eq "HASH" && ! %{ $_[0] };
-  print STDERR $self->logmethmsg(1,@_);
+  print STDERR $self->_logmethmsg(1,@_);
 }
 
-sub logmethifv {
+sub __logfunc($$@) {
+  my ($cl, $nesting, @items) = @_;
+  print STDERR __logfuncmsg($cl+1, $nesting, @items);
+}
+
+sub _logmethifv {
   my $self = $_[0]; # not shifted off
   return unless $$self->{verbose};
-  goto &logmeth;  # goto so {caller_level} is correct
+  goto &_logmeth;  # goto so {caller_level} is correct
 }
 
 sub _call_usercode($$$) {
@@ -851,10 +870,10 @@ sub _apply_to_rows($$$;$$$) {
   my $hash = $$self;
   my ($linenums,$rows,$num_cols,$cl) = @$hash{qw/linenums rows num_cols caller_level/};
 
-  croak $self->logmethmsg(0, " Missing or incorrect {code} argument") unless ref($code) eq "CODE";
+  croak $self->_logmethmsg(0, " Missing or incorrect {code} argument") unless ref($code) eq "CODE";
   foreach (@$cxlist) {
     if ($_ < 0 || $_ >= $num_cols) {
-      croak $self->logmethmsg(0,"cx $_ is out of range")
+      croak $self->_logmethmsg(0,"cx $_ is out of range")
     }
   }
 
@@ -1235,9 +1254,10 @@ sub alias {
     # _spec2cx will auto-detect title_rx the first time $spec isn't absolute.
     # Descriptions are like "cx N" or "cx N: regex matched title '...'"
     my ($cx, $desc) = $self->_spec2cx($spec); # throws if invalid
-    $desc = "alias for ".$desc;
+    #$desc = "alias for ".$desc;
+    $desc = "alias for cx $cx ($spec)";
 
-    $self->logmethifv(\"$ident => ",\__fmt_colspec_cx($spec,$cx));
+    $self->_logmethifv(\"$ident => ",\__fmt_colspec_cx($spec,$cx));
 
     my $ocx = eval{ $self->_spec2cx($ident) };
     if (defined($ocx) && $ocx != $cx) {
@@ -1266,7 +1286,7 @@ sub unalias(@) {
 
   foreach (@_) {
     delete $useraliases->{$_} // croak "unalias: '$_' is not a column alias\n";
-    $self->logmethifv(\" Removing alias $_ => ", \$colx_desc->{$_});
+    $self->_logmethifv(\" Removing alias $_ => ", \$colx_desc->{$_});
     delete $colx->{$_} // oops;
     delete $colx_desc->{$_} // oops;
   }
@@ -1278,12 +1298,11 @@ sub unalias(@) {
 #   Note: By default the title row is auto-detected when first referenced.
 #
 #   title_rx ROWINDEX   sets the title row
-#   title_rx undef      reverts to having no title row
-#   title_rx "disable"  reverts to no title row and disables auto-detection
+#   title_rx undef      reverts to having no title row (use to re-read titles).
 #
 #   If a return value is wanted (i.e. not called in void context) and no
 #   title row has been set yet, then auto-detect it immediately (using
-#   any OPTARGS), unless auto-detect is disabled.
+#   any OPTARGS).  Auto-detect may be disabled in {OPTARGS}.
 #
 #   If called in a void context, {OPTARGS} are simply saved for later use.
 #
@@ -1291,36 +1310,32 @@ sub title_rx {
   my $self = shift;
   # We must distinguish omitted {OPTIONS} from {} because {}
   # means reset autodetect_opts to defaults.
-  my $opthash = ref($_[0]) eq 'HASH' ? shift() : undef;
-
-  $$self->{autodetect_opts} = $opthash if defined($opthash);
-
+  my $opthash = shift() if ref($_[0]) eq 'HASH'; # else undef
+  if ($opthash) {
+    __validate_opthash($opthash, 
+                       [qw(enable required min_rx max_rx first_cx last_cx)],
+                       "autodetect option");
+    $$self->{autodetect_opts} = $opthash;
+  }
   if (@_ == 0) {
-    unless (defined wantarray) {
-      confess "title_rx called in void context without {OPTARGS} or argument"
+    if (defined wantarray) {
+      # A return value was requested
+      my $rx = $$self->{title_rx} // $self->_autodetect_title_rx_ifneeded_cl1();
+      $self->_logmethifv(defined($opthash)?($opthash):\"", @_, \" : ", $rx);
+      return $rx;
+    } else {
+      croak "title_rx called in void context without {OPTARGS} or argument"
         unless defined($opthash);
+      $self->_logmethifv($opthash, @_);
       return;
     }
-    # A return value was requested
-    my $rx = $$self->{title_rx} // $self->_autodetect_title_rx_ifneeded_cl1();
-    $self->logmethifv(defined($opthash) ? ($opthash):\"",@_,\" → ",\u($rx));
-    return $rx;
   } else {
-    $self->logmethifv(defined($opthash) ? ($opthash):\"",@_);
+    $self->_logmethifv(defined($opthash) ? $opthash : \"", @_);
     my $rx = shift;
-    if (!defined($rx) || $rx =~ /^\d+$/) {
-      $$self->{title_rx} = $rx;
-      # If set to undef, do not immediately auto-detect!
-    }
-    elsif ($rx eq "disable") {
-      $$self->{autodetect_opts} = undef;
-      $$self->{title_rx} = undef;
-    }
-    elsif (u($rx) eq "enable") {
-      $$self->{autodetect_opts} //= {};
-      $self->_autodetect_title_rx_ifneeded_cl1() if wantarray;
-    }
-    else { croak "Invalid title_rx argument ",visq($rx) }
+    croak "Invalid title_rx argument: ",visq($rx) 
+      if defined($rx) && $rx !~ /^\d+$/;
+    $$self->{title_rx} = $rx;
+    # If set to undef, do not immediately auto-detect!
     # N.B. re-scan even if title_rx is unchanged, in case headers were modified
     $self->_rebuild_colx();
   }
@@ -1328,42 +1343,44 @@ sub title_rx {
 }
 
 # Return title_rx, auto-detecting the title row if necessary and enabled.
-# Auto-detect is enabled unless {autodetect_opts} is undef.
 #
-# undef is returned if {autodetect_opts} is undef and there is no
-# current title row.
+# undef is returned if autodetect is disabled and there is no current title row.
 #
 # An exception is thrown if auto-detect was enabled but no plausible title
 # row can be found.
 #
 # Optional parameters in {autodetect_opts} :
+#   enable   => BOOL,
 #   required => [COLSPEC, ...] # required titles
-#   min_rx, max_rx   => NUM,   # range of rows which may contain the title row.
-#   first_cx => NUM,   # first column ix which must contain a valid title
-#   last_cx  => NUM,   # last  column ix which must contain a valid title
+#   min_rx, max_rx   => NUM    # range of rows which may contain the title row.
+#   first_cx => NUM    # first column ix which must contain a valid title
+#   last_cx  => NUM    # last  column ix which must contain a valid title
 #
 # Detection looks for the first row which contains non-empty cells in
 # every column (or within the specified range), and which contains
 # all "required" titles.
 #
 # "Required" titles are optional and may be specified in either
-# {autodetect_opts}->{required} or as arguments to this function
-# (currently only passed by _specs2cxdesclist).
+# {autodetect_opts}->{required} or as arguments to this function;
+# the latter case occurs only when called from _specs2cxdesclist.
 sub _autodetect_title_rx_ifneeded_cl1 {
   # "cl1" means this must be called from a top-level method (caller level 1)
   my ($self, @required_specs) = @_;
+
   # increase {caller_level} by 2: One for calling us + one for what we call
   local $$self->{caller_level} = $$self->{caller_level} + 2;
-  if (! defined($$self->{title_rx}) && defined($$self->{autodetect_opts})) {
 
-    my ($ad_opts, $rows, $colx, $verbose) =
-       @$$self{qw(autodetect_opts rows colx verbose)};
+  my ($title_rx, $ad_opts, $rows, $colx, $num_cols, $verbose, $debug) =
+     @$$self{qw(title_rx autodetect_opts rows colx num_cols verbose debug)};
 
+  if (! defined($title_rx) and 
+      ($ad_opts->{enable}) || !exists($ad_opts->{enable})) {
     push @required_specs, to_array $ad_opts->{required}//[] ;
     my $min_rx   = __validate_nat($ad_opts->{min_rx}//0,"min_rx");
     my $max_rx   = __validate_nat($ad_opts->{max_rx}//3,"max_rx");
     my $first_cx = __validate_nat($ad_opts->{first_cx}//0,"first_cx");
-    my $last_cx  = __validate_nat($ad_opts->{last_cx}//$$self->{num_cols}-1,"last_cx");
+    my $last_cx  = __validate_nat($ad_opts->{last_cx}//max($num_cols-1,0),
+                                  "last_cx");
   
     my ($detected, $nd_reason, $partial_match_rx);
     {
@@ -1373,11 +1390,13 @@ sub _autodetect_title_rx_ifneeded_cl1 {
       # titles in all positions.
       RX: for my $rx ($min_rx .. min($max_rx,$#$rows)) {
         local $$self->{caller_level} = $$self->{caller_level} + 1;
+        say ivis '#autodetect: Trying RX $rx ...' if $debug;
         next RX unless defined eval { $self->title_rx($rx) };
         foreach my $spec (@required_specs) {
           if (eval { my @r = $self->_specs2cxdesclist($spec) }) {
             $partial_match_rx //= $rx; # for diagnostics
           } else {
+            say ivis '#  <<$spec>> not found' if $debug;
             $nd_reason //= "Title $spec not found";
             next RX
           }
@@ -1394,8 +1413,9 @@ sub _autodetect_title_rx_ifneeded_cl1 {
             }
           }
           if (defined $empty_cx) {
-            $nd_reason = $found_nonempty ?  __fmt_cx($empty_cx)." is empty"
+            $nd_reason = $found_nonempty ? __fmt_cx($empty_cx)." is empty"
                                          : "all columns are empty";
+            say dvis '#  RX $rx EMPTY: $nd_reason' if $debug;
             next RX
           }
         }
@@ -1404,6 +1424,7 @@ sub _autodetect_title_rx_ifneeded_cl1 {
       }
       $self->title_rx(undef) if $$self->{title_rx}; # will re-do below
     }
+    say ivis '#   detected = $detected' if $debug;
     # User's {verbose} & {silent} are restored at this point
     if (defined $detected) {
       carp("Auto-detected title_rx = $detected") if $verbose;
@@ -1412,15 +1433,18 @@ sub _autodetect_title_rx_ifneeded_cl1 {
       $self->title_rx($detected); # might still show collision warnings
     } else {
       if (! defined $nd_reason) {
-        $nd_reason = "No rows checked! (There are ".scalar(@$rows)." in the sheet)";
+        $nd_reason = ivis '(BUG?) No rows checked! num_cols=$num_cols rows=$$self->{rows}'
+        .dvis '\n##($min_rx $max_rx $first_cx $last_cx)'
+        ;
       } else {
         $nd_reason .= $min_rx==0 ? " in the first ".($max_rx+1)." rows"
                                  : " within rx $min_rx .. rx $max_rx";
       }
-      confess("In ",qsh($$self->{data_source})," ...\n",
-            "Auto-detect of title_rx failed: $nd_reason",
+      croak("In ",qsh($$self->{data_source})," ...\n",
+            "Auto-detect of title_rx with options ",vis($ad_opts),
+            " failed: $nd_reason",
             (defined($partial_match_rx) ?
-               ("\nFYI rx $partial_match_rx contains ",vis($self->rows->[$partial_match_rx]),")\n") : ())
+               ("\nFYI rx $partial_match_rx contains ",vis($self->rows->[$partial_match_rx]),")\n") : ()),
       );
     }
   }
@@ -1432,7 +1456,7 @@ sub first_data_rx {
   my $first_data_rx = $$self->{first_data_rx};
   return $first_data_rx if @_ == 0;    # 'get' request
   my $rx = __validate_nat_or_undef( shift() );
-  $self->logmethifv($rx);
+  $self->_logmethifv($rx);
   # Okay if this points to one past the end
   $self->_check_rx($rx, 1) if defined $rx;  # one_past_end_ok=1
   $$self->{first_data_rx} = $rx;
@@ -1443,7 +1467,7 @@ sub last_data_rx {
   my $last_data_rx = $$self->{last_data_rx};
   return $last_data_rx if @_ == 0;    # 'get' request
   my $rx = __validate_nat_or_undef( shift() );
-  $self->logmethifv($rx);
+  $self->_logmethifv($rx);
   if (defined $rx) {
     $self->_check_rx($rx, 1); # one_past_end_ok=1
     confess __callingsub(0).": last_data_rx must precede first_data_rx"
@@ -1468,7 +1492,7 @@ sub move_cols($@) {
   my $insert_offset = $to_cx - scalar(@source_cxs_before);
   my @rsorted_source_cxs = sort { $b <=> $a } @source_cxs;
 
-  $self->logmethifv(\__fmt_colspec_cx($posn,$to_cx), \" <-- ",
+  $self->_logmethifv(\__fmt_colspec_cx($posn,$to_cx), \" <-- ",
                 \join(" ",map{"$source_cxs[$_]\[$_\]"} 0..$#source_cxs));
 
   croak "move destination is too far to the right\n"
@@ -1496,7 +1520,7 @@ sub insert_cols {
 
   my $to_cx = $self->_relspec2cx($posn);
 
-  $self->logmethifv(\__fmt_colspec_cx($posn,$to_cx), \" <-- ", \avis(@new_titles));
+  $self->_logmethifv(\__fmt_colspec_cx($posn,$to_cx), \" <-- ", \avis(@new_titles));
 
   @new_titles = map { $_ // "" } @new_titles; # change undef to ""
   my $have_new_titles = first { $_ ne "" } @new_titles;
@@ -1564,7 +1588,7 @@ sub delete_cols {
 
   my @reverse_cxs = sort { $b <=> $a } @cxlist;
 
-  $self->logmethifv(reverse @reverse_cxs);
+  $self->_logmethifv(reverse @reverse_cxs);
   my @old_cxs = (0..$num_cols-1);
   for my $row (@$rows, \@old_cxs) {
     foreach my $cx (@reverse_cxs) {
@@ -1606,7 +1630,7 @@ sub options {
     }
     else { croak "options: Unknown option key '$key' (possible keys: silent verbose debug)\n"; }
   }
-  $self->logmethifv(\__fmt_pairs(@eff_args));
+  $self->_logmethifv(\__fmt_pairs(@eff_args));
   $prev;
 }
 
@@ -1650,7 +1674,7 @@ sub join_cols {
   my ($num_cols, $rows) = @$hash{qw/num_cols rows/};
 
   my @source_cxs = map { scalar $self->_spec2cx($_) } @sources;
-  $self->logmethifv(\"'$separator' ",
+  $self->_logmethifv(\"'$separator' ",
                 \join(" ",map{"$source_cxs[$_]\[$_\]"} 0..$#source_cxs));
 
   my $saved_v = $hash->{verbose}; $hash->{verbose} = 0;
@@ -1691,7 +1715,7 @@ sub rename_cols(@) {
     my $old_title = shift @_;
     my $new_title = shift @_;
     my $cx = $self->_spec2cx($old_title);
-    $self->logmethifv($old_title, \" -> ", $new_title, \" [cx $cx]");
+    $self->_logmethifv($old_title, \" -> ", $new_title, \" [cx $cx]");
     croak "rename_cols: Column $old_title is too large\n"
       if $cx > $#$title_row; # it must have been an absolute form
     $title_row->[$cx] = $new_title;
@@ -1727,7 +1751,7 @@ sub apply_all {
   my ($code, @cols) = @_;
   my $hash = $$self;
   my @cxs = map { scalar $self->_spec2cx($_) } @cols;
-  $self->logmethifv(\"rx 0..",$#{$hash->{rows}},
+  $self->_logmethifv(\"rx 0..",$#{$hash->{rows}},
                     @cxs > 0 ? \(" cxs=".avis(@cxs)) : ());
   @_ = ($self, $code, \@cxs);
   goto &_apply_to_rows
@@ -1751,7 +1775,7 @@ sub apply_torx {
   croak "Missing rx (or [list of rx]) argument\n" unless defined $rxlist_arg;
   my $rxlist = ArrifyCheckNotEmpty($rxlist_arg);
   my @cxs = map { scalar $self->_spec2cx($_) } @cols;
-  $self->logmethifv(\vis($rxlist_arg),
+  $self->_logmethifv(\vis($rxlist_arg),
                     @cxs > 0 ? \(" cxs=".avis(@cxs)) : ());
   @_ = ($self, $code, \@cxs, $rxlist);
   goto &_apply_to_rows
@@ -1765,7 +1789,7 @@ sub apply_exceptrx {
   croak "Missing rx (or [list of rx]) argument\n" unless defined $exrxlist_arg;
   my $exrxlist = ArrifyCheckNotEmpty($exrxlist_arg);
   my @cxs = map { scalar $self->_spec2cx($_) } @cols;
-  $self->logmethifv(\vis($exrxlist_arg),
+  $self->_logmethifv(\vis($exrxlist_arg),
                     @cxs > 0 ? \(" cxs=".avis(@cxs)) : ());
   my $hash = $$self;
   my $max_rx = $#{ $hash->{rows} };
@@ -1790,7 +1814,7 @@ sub split_col {
   my $old_cx = $self->_spec2cx($oldcol_posn);
   my $newcols_first_cx = $self->_relspec2cx($newcols_posn);
 
-  $self->logmethifv(\"... $oldcol_posn\[$old_cx] -> [$newcols_first_cx]",
+  $self->_logmethifv(\"... $oldcol_posn\[$old_cx] -> [$newcols_first_cx]",
                     avis(@new_titles));
   my $saved_v = $$self->{verbose}; $$self->{verbose} = 0;
 
@@ -1807,7 +1831,7 @@ sub split_col {
 sub reverse_cols() {
   my $self = shift;
   my ($rows, $num_cols) = @$$self{qw/rows num_cols/};
-  $self->logmethifv();
+  $self->_logmethifv();
   for my $row (@$rows) {
     @$row = reverse @$row;
   }
@@ -1816,7 +1840,7 @@ sub reverse_cols() {
 
 sub transpose() {
   my $self = shift;
-  $self->logmethifv();
+  $self->_logmethifv();
 
   my ($rows, $old_num_cols, $linenums) = @$$self{qw/rows num_cols linenums/};
 
@@ -1868,7 +1892,7 @@ sub delete_rows {
     croak "Invalid row index '$_'\n" unless /^\d+$/ && $_ <= $#$rows;
   }
   my @rev_sorted_rxs = sort {$b <=> $a} @rowspecs;
-  $self->logmethifv(reverse @rev_sorted_rxs);
+  $self->_logmethifv(reverse @rev_sorted_rxs);
 
   # Adjust if needed...
   if (defined $title_rx) {
@@ -1934,7 +1958,7 @@ sub insert_rows {
 
   $rx = @$rows if $rx =~ /^(?:END|\$)$/;
 
-  $self->logmethifv(\"at rx $rx (count $count)");
+  $self->_logmethifv(\"at rx $rx (count $count)");
 
   croak "Invalid new rx '$rx'" unless looks_like_number($rx);
   if (defined($title_rx) && $rx <= $title_rx) {
@@ -1969,7 +1993,7 @@ sub read_spreadsheet {
     $csvopts{$key} = $opts->{$key} if defined $opts->{$key};
     delete $opts->{$key};
   }
-  $csvopts{escape_char} = $csvopts{quote_char}; # " →  ""
+  $csvopts{escape_char} = $csvopts{quote_char}; # " : """
 
   { my %notok = %$opts;
     delete $notok{$_} foreach (
@@ -2004,7 +2028,7 @@ sub read_spreadsheet {
                    %$opts, # all our opts are valid here
              );
   }
-  $self->logmethifv($inpath, $hash);
+  $self->_logmethifv($inpath, $hash);
 
   # Save possibly-defaulted iolayers for use in subsequent write_csv
   $$self->{iolayers} //= $hash->{iolayers};
@@ -2088,11 +2112,11 @@ sub write_csv {
 
   my $fh;
   if (openhandle($dest)) { # an already-open file handle?
-    $self->logmethifv($opts, \("<file handle specified> $opts->{iolayers} "
+    $self->_logmethifv($opts, \("<file handle specified> $opts->{iolayers} "
                                 .scalar(@$rows)." rows, $num_cols columns)"));
     $fh = $dest;
   } else {
-    $self->logmethifv($opts, \($dest." $opts->{iolayers} ("
+    $self->_logmethifv($opts, \($dest." $opts->{iolayers} ("
                              .scalar(@$rows)." rows, $num_cols columns)"));
     croak "Output path suffix must be *.csv, not\n  ",qsh($dest),"\n"
       if $dest =~ /\.([a-z]*)$/ && lc($1) ne "csv";
@@ -2175,7 +2199,7 @@ sub write_spreadsheet {
   my ($self, $opts, $outpath) = &__self_opthash_1arg;
   my $colx = $$self->{colx};
 
-  $self->logmethifv($opts, $outpath);
+  $self->_logmethifv($opts, $outpath);
 
   # {col_formats} may be [list of formats in column order]
   #   or { COLSPEC => fmt, ..., __DEFAULT__ => fmt }
@@ -2240,29 +2264,29 @@ sub __getsheet($$$$) {
   $onlyinapply ? _onlyinapply($sheet, $uvar) : $sheet
 }
 sub _scal_tiehelper {  # access a scalar sheet variable
-  my($mutating, $pkg, $ident, $uvar, $onlyinapply) = @_;
+  my($mutating, $pkg, $uvar, $ident, $onlyinapply) = @_;
   my $sheet = __getsheet($mutating, $pkg, $uvar, $onlyinapply);
   confess avisq(@_) unless exists $$sheet->{$ident};
   return \$$sheet->{$ident}; # return ref to the scalar
 }
 sub _aryelem_tiehelper { # access an element of an array sheet variable
-  my($mutating, $pkg, $index_ident, $array_ident, $uvar, $onlyinapply) = @_;
+  # *** SPECIAL HANDLING for title_rx 
+  my($mutating, $pkg, $uvar, $index_ident, $array_ident, $onlyinapply) = @_;
   # E.g. for $title_row : index_ident="title_rx" and array_ident="rows"
   my $sheet = __getsheet($mutating, $pkg, $uvar, $onlyinapply);
-  my $aref = $$sheet->{$array_ident} // oops avisq(@_); # e.g. {rows}
+  my $aref = $$sheet->{$array_ident} // oops dvisq '$array_ident @_'; # e.g. {rows}
   my $index = $$sheet->{$index_ident} // do{
+    return \($sheet->_autodetect_title_rx_ifneeded_cl1())
+      if $index_ident eq "title_rx";  # for title_row (aref->rows ix>title_rx)
     return \undef
-      if $index_ident eq "title_rx"   # Non-existent title_row
-         ||
-         $index_ident eq "current_rx" # During Data::Dumper inspection
-         ;
+      if $index_ident eq "current_rx"; # During Data::Dumper inspection?
     oops dvis '$array_ident $index_ident'; # otherwise it's a bug
   };
   oops(dvisq '@_ $index') if $index > $#$aref;
   return \$aref->[$index]; # return ref to scalar (the element in the array)
 }
 sub _refval_tiehelper { # access a sheet variable which is a ref of some kind
-  my($mutating, $pkg, $field_ident, $uvar, $onlyinapply, $mutable) = @_;
+  my($mutating, $pkg, $uvar, $field_ident, $onlyinapply, $mutable) = @_;
   $mutating = 0 if $mutable;
   my $sheet = __getsheet($mutating, $pkg, $uvar, $onlyinapply);
   return $$sheet->{$field_ident}; # return the value, which is itself a ref
