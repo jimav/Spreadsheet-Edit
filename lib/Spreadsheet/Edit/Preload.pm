@@ -1,16 +1,13 @@
-# Copyright © Jim Avera 2021.  Released into the Public Domain
-# by the copyright owner.  (jim.avera AT gmailgmail  daht komm)
-# Please retain the preceeding attribution in any copies or derivitives.
-
-# $Id: Preload.pm,v 1.4 2021/10/08 17:05:07 jima Exp jima $
+# License: http://creativecommons.org/publicdomain/zero/1.0/
+# (CC0 or Public Domain).  To the extent possible under law, the author, 
+# Jim Avera (email jim.avera at gmail) has waived all copyright and 
+# related or neighboring rights to this document.  Attribution is requested
+# but not required.
 
 use strict; use warnings FATAL => 'all'; use v5.20;
 use utf8;
 
 package Spreadsheet::Edit::Preload;
-
-
-use version 0.77; our $VERSION = version->declare(sprintf "v%s", q$Revision: 1.4 $ =~ /(\d[.\d]+)/);
 
 use Carp;
 use Import::Into;
@@ -19,22 +16,23 @@ our @CARP_NOT = ('Spreadsheet::Edit');
 
 sub import {
   my $pkg = shift;  # that's us
-  my ($inpath, %opts) = @_;
+  my ($inpath, @args) = @_;
   my $callpkg = caller($Exporter::ExportLevel);
 
   # Import Spreadsheet::Edit and the usual variables for the user
-  Spreadsheet::Edit->import::into($callpkg, ':DEFAULT', ':STDVARS');
+  Spreadsheet::Edit->import::into($callpkg, ':all');
 
   # Load the spreadsheet and tie column variable in caller's package
-  my $sh = Spreadsheet::Edit->new(%opts);
-  my $title_rx_arg = delete $opts{title_rx};
-  $sh->read_spreadsheet($inpath, %opts);
-  $sh->title_rx($title_rx_arg);  # undef if no titles 
-  Spreadsheet::Edit::package_active_sheet($callpkg, $sh);
-  # Actually safe need no longer be specified explicitly because it 
-  # will be automatically assumed while ${^GLOBAL_PHASE} is "START".
-  # See code in Spreadsheet::Edit::OO::tie_column_vars.
-  $sh->tie_column_vars({package => $callpkg, safe => 1, %opts});
+  my $sh = Spreadsheet::Edit->new->read_spreadsheet(@args);
+
+  if (ref($args[0]) eq "HASH" && exists $args[0]->{title_rx}) {
+    $sh->title_rx( $args[0]->{title_rx} );
+  }
+
+  $sh->tie_column_vars({package => $callpkg}, ':all');
+
+  # Make it the 'current sheet' in the caller's package
+  Spreadsheet::Edit::sheet( {package => $callpkg}, $sh );
 }
 
 1;
@@ -49,57 +47,54 @@ Text::Csv::Edit::Preload - load and auto-import column variables
 
 =head1 SYNOPSIS
 
-  use Spreadsheet::Edit::Preload PATH, [OPTIONS...]
+  use Spreadsheet::Edit::Preload {OPTIONS}, PATH
 
-  use Spreadsheet::Edit::Preload "/path/to/file.xls", sheet => "Sheet1",
-                               title_rx => 0;
+  use Spreadsheet::Edit::Preload 
+    {sheet => "Sheet1", title_rx => 2}, "/path/to/file.xls" ;
 
   apply {
     say "row ",($rx+1)," has $FIRST_NAME $LAST_NAME";
   }
 
+  say "Row 4, column B contains ", $rows[3]{B};
+  say "Row 4: "First Name" is ", $rows[3]{"First Name"};
+  say "Row 4: "Last Name" is ", $rows[3]{Last_Name};
+  say "There are ", scalar(@rows), " rows of data.";
+  say "There are $num_cols columns";
+
 =head1 DESCRIPTION
 
-A spreadsheet or csv file is immediately
-loaded and tied variables corresponding to columns are created 
-and imported into the caller's package.  These variables may
-be used in C<apply> operations to access cells in the current row as
-described in C<Spreadsheet::Edit>.
-
-These imported variables have names derived from column titles 
-(if C<title_rx> is specified), as well as $A, $B, etc. corresponding to
-to absolute columns.
+This is a wrapper for C<Spreadsheet::Edit> which loads a spreadsheet
+at compile time.  Tied variables are imported having names derived
+from column titles or letter codes; these may be used during "apply"
+operations to access the corresponding column in the "current row".
 
 The example above is equivalent to
 
-  use Spreadsheet::Edit qw(:DEFAULT :STDVARS);
+  use Spreadsheet::Edit qw(:FUNCS :STDVARS);
   BEGIN {
-    options ... ;  
-    read_spreadsheet "/path/to/file.xls", sheet => "Sheet1";
-    title_rx 0;
-    tie_column_vars;
+    read_spreadsheet {sheet => "Sheet1"}, "/path/to/file.xls";
+    title_rx 2;
+    tie_column_vars ':all';
   }
 
-Note that you need not (and may not) explicitly declare tied
-column variables when importing them this way, in contrast with
-normal usage (not in a BEGIN block) where the variables must be
-declared with C<our> to be usable by your code.
+You need not (and may not) explicitly declare the tied variables.
 
 =head1 OPTIONS
 
-OPTIONS consist of key => value pairs.  They will be passed to
-C<read_spreadsheet>, C<title_rx> or C<options> as appropriate.
+The {OPTIONS} hashref is optional and may specify a workbook sheetname,
+CSV parsing options, etc. (see documentation for C<read_spreadsheet>).
+
+   title_rx => ROWINDEX
+
+explicitly specifies the 0-based row index of the title row.  If not
+specified, the title row is auto-detected.
 
 =head1 SECURITY
 
 If a title, or the identifier derived from the title, would clash with a
 variable which already exists in the caller's package or in package main, 
-then a warning is issued and the variable is not imported (package main
-is checked to avoid clobbering special Perl variables such as C<STDOUT>).
-
-In such cases the column can be accessed using the appropriate
-spreadsheet-letter variable $A, etc. (assuming I<that> name does 
-not clash with something).
+then a fatal error occurs. 
 
 =head1 SEE ALSO
 

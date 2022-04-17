@@ -21,6 +21,16 @@ use utf8;
 
 package Spreadsheet::Edit::OO;
 
+=pod
+
+=for nothing Spreadsheet::Edit.pm documents functions with all the same
+=for nothing names as methods in here (::OO.pm).  Well, ther emight be
+=for nothing a few extra undocumented methods here but not worth worrying about
+
+=for Pod::Coverage *EVERYTHING*
+
+=cut
+
 use Exporter 'import';
 our @EXPORT_OK = qw(oops %pkg2currsheet); # for Spreadsheet::Edit.pm
 
@@ -615,6 +625,8 @@ sub tie_column_vars {
     push @varnames, sort $self->_all_valid_idents;
   }
   croak "Unrecognized token in arguments: ",avis(keys %tokens) if %tokens;
+  
+  $self->title_rx($opts->{title_rx}) if exists $opts->{title_rx};
 
   my $r = $self->_tie_col_vars($pkg, $parms, @varnames);
 
@@ -636,12 +648,13 @@ sub data_source {
   croak "Too many args" unless @_ == 1;
   $$self->{data_source} = $_[0]
 }
-sub iolayers { ${&__selfonly}->{iolayers} }
 sub linenums { ${&__selfonly}->{linenums} }
-sub meta_info {${&__selfonly}->{meta_info} }
 sub num_cols { ${&__selfonly}->{num_cols} }
 sub rows { ${&__selfonly}->{rows} }
 sub sheetname { ${&__selfonly}->{sheetname} }
+
+sub iolayers { ${&__selfonly}->{iolayers} }
+sub meta_info {${&__selfonly}->{meta_info} }
 sub input_encoding {
   # Emulate old API.  We actually store input_iolayers instead not,
   # so as to include :crlf if necessary.
@@ -652,6 +665,7 @@ sub input_encoding {
     && ${$self}->{input_iolayers} =~ /encoding\(([^()]*)\)/;
   return $1;
 }
+
 # See below for title_rx()
 sub title_row {
   my $self = $_[0];

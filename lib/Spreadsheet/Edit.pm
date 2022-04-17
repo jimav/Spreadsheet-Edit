@@ -4,8 +4,6 @@
 # related or neighboring rights to this document.  Attribution is requested
 # but not required.
 
-# $Id: Edit.pm,v 1.114 2022/03/08 22:53:13 jima Exp jima $
-
 # Pod documentation is below (use perldoc to view)
 
 use strict; use warnings FATAL => 'all'; use utf8;
@@ -43,7 +41,7 @@ our @EXPORT = qw(
   move_cols insert_col insert_cols insert_row insert_rows new_sheet only_cols 
   options package_active_sheet read_spreadsheet rename_cols reverse_cols 
   sheet sheetname sort_rows split_col tie_column_vars title2ident title_row 
-  title_rx unalias untie_column_vars write_csv write_spreadsheet );
+  title_rx unalias write_csv write_spreadsheet );
 
 my @stdvars = qw( $title_rx $first_data_rx $last_data_rx $num_cols
                   @rows @linenums @meta_info %colx %colx_desc $title_row
@@ -325,6 +323,8 @@ sub insert_row(;$) { goto &insert_rows; }
 sub insert_rows(;$$) { __callmethod("insert_rows", @_) }
 sub only_cols(@) { __callmethod_checksheet("only_cols", @_) }
 sub options(@) { __callmethod("options", @_) }
+# FIXME: Can package_active_sheet be replaced by
+#    $result = sheet {package => "pkgname"}   ???
 sub package_active_sheet($) { $pkg2currsheet{shift()} }
 sub read_spreadsheet($;@) { __callmethod("read_spreadsheet", @_) }
 sub rename_cols(@) { __callmethod_checksheet("rename_cols", @_) }
@@ -339,7 +339,6 @@ sub title_rx(;$@) { __callmethod_checksheet("title_rx", @_) }
 sub first_data_rx(;$) { __callmethod_checksheet("first_data_rx", @_) }
 sub last_data_rx(;$) { __callmethod_checksheet("last_data_rx", @_) }
 sub unalias(@) { __callmethod_checksheet("unalias", @_) }
-sub untie_column_vars() { __callmethod("untie_column_vars", @_) }
 sub write_csv(*;@) { __callmethod_checksheet("write_csv", @_) }
 sub write_spreadsheet(*;@) { __callmethod_checksheet("write_spreadsheet", @_) }
 sub write_fixedwidth(*;$) { __callmethod_checksheet("write_fixedwidth", @_) }
@@ -1444,6 +1443,10 @@ Besides all those, the following methods are available:
 
 =head2 $sheet->colx_desc() ;        # Analogous to \%colx_desc
 
+=head2 $sheet->first_data_rx() ;    # Analogous to $first_data_rx
+
+=head2 $sheet->last_data_rx() ;     # Analogous to $last_data_rx
+
 =head2 $sheet->title_row() ;        # Analogous to $title_row
 
 =head2 $sheet->rx() ;               # Current rx in apply, analogous to to $rx
@@ -1495,6 +1498,10 @@ which behave as either an array or hash reference).
 =head1 AUTHOR / LICENSE
 
 Jim Avera (jim.avera at gmail).   Public Domain or CC0.
+
+=for Pod::Coverage fmt_sheet write_fixedwidth delete_row package_active_sheet
+
+=for Pod::Coverage tied_varnames title2ident
 
 =cut
 
