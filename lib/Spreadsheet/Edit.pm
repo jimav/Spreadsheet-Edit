@@ -175,7 +175,7 @@ our $silent;
 
 sub __validate_sheet_arg($) {
   my $sheet = shift;
-  croak "Argument '${\u($sheet)}' is not a sheet object"
+  croak "Argument '${\u($sheet)}' is not a Spreadsheet::Edit sheet object"
     if defined($sheet) and
         !blessed($sheet) || !$sheet->isa("Spreadsheet::Edit::OO");
   $sheet;
@@ -240,14 +240,12 @@ sub _newsheet($$@) {
 #
 #   my $obj = Spreadsheet::Edit->new(...)
 #
+# Unlike other methods, new() takes key => value pair arguments.
+# For consistency with other methods an initial {OPTIONS} hash is
+# also allowed, and is merged with any linear args in ::OO::new()
 sub new {
-  my $this = shift;
-  my $class = ref($this) || $this;
-  my %opts = @_;
-
-  __default_options_cl1(\%opts, 0);
-
-  return Spreadsheet::Edit::OO->new(caller_level => 1, %opts);
+  shift(); # our classname (ignored)
+  Spreadsheet::Edit::OO->new(@_, caller_level => 1);
 }
 
 sub __callmethod($@) {

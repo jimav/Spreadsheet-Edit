@@ -187,13 +187,25 @@ sub __fmt_colx($;$$) {
 # Caller's caller (+ specified additional levels)
 # Results are "edited for simplicity"
 sub __callingcaller(;$) {
-  my @c = caller(1 + (shift()//0)); oops unless @c;
-  #oops if $c[0] =~ /Spreadsheet::Edit($|::OO$)/;
+  my $exlevels = $_[0] // 0;
+  # caller(0) is call to us
+  # caller(1) is call to our caller
+  # caller(2) is call to our caller's caller
+  my @c = caller(1 + $exlevels); 
+  oops dvis '$exlevels 1+exlevels->', avis((caller(1+$exlevels))[0..3]) unless @c;
+  if ($c[0] =~ /Spreadsheet::Edit($|::OO$)/) {
+    oops dvis 'BUG: caller level incorrect ($exlevels @c[0..3])\n   ',
+         join("\n   ", map{ my ($pkg,$fn,$lno,$subr) = caller($_);
+                            $fn = basename($fn) if $fn;
+                            ivis('level $_: pkg=$pkg ${fn}:$lno subr=$subr')
+                          } 0..1+$exlevels+2);
+  }
   $c[1] = basename($c[1]); # filename
   $c[3] =~ s/.*:://;       # subroutine
   @c
 }
-sub __callingsub(;$) { ( __callingcaller(1 + (shift()//0)) )[3] }
+# The subname containing the call to us (+ specified levels up)
+sub __callingsub(;$) { ( __callingcaller(0 + (shift()//0)) )[3] }
 
 # caller's caller + {caller_level} additional levels
 sub _caller { #METHOD
@@ -222,6 +234,7 @@ sub __selfonly {
 sub __self_opthash_Nargs($@) {  # (num_expected_args, @_)
   my $Nargs = shift;
   my ($self, $opthash) = &__self_opthash;
+  #croak
   croak __callingsub(), " expects $Nargs arguments, not ",scalar(@_),"\n"
     if $Nargs != @_;
   ($self, $opthash, @_)
@@ -2009,6 +2022,8 @@ sub read_spreadsheet {
   }
   $csvopts{escape_char} = $csvopts{quote_char}; # " : """
 
+  croak "Obsolete {sheet} key in options" if exists $opts->{sheet};
+
   { my %notok = %$opts;
     delete $notok{$_} foreach (
       qw/iolayers encoding verbose silent debug/,
@@ -2077,8 +2092,6 @@ sub read_spreadsheet {
   close $fh || croak "Error reading $hash->{csvpath}: $!\n";
 
   $$self->{data_source} = $inpath;
-  $$self->{sheetname} = $hash->{sheet};
-                   oops "conversion half done?!?" if $hash->{sheetname};
 
   $self->_rows_replaced;
 }#read_spreadsheet
@@ -2239,8 +2252,7 @@ sub write_spreadsheet {
   close $csvfh or die "Error writing $csvpath : $!";
 
   # Default sheet name to output file basename sans suffix
-  $opts->{sheet} //= fileparse($outpath, qr/\.\w+/);
-  #TODO: change convert_spreadshet et al to accept "sheetname" instead of "sheet"
+  $opts->{sheetname} //= fileparse($outpath, qr/\.\w+/);
 
   convert_spreadsheet($csvpath,
                       %$opts,
