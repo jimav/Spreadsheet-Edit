@@ -10,8 +10,10 @@ use strict; use warnings FATAL => 'all'; use utf8;
 use feature qw(say state);
 
 package Spreadsheet::Edit;
-use Spreadsheet::Edit::OO qw(oops %pkg2currsheet);
-#BEGIN { *{Spreadsheet::Edit::pkg2currsheet} = \%Spreadsheet::Edit::OO::pkg2currsheet; }
+
+# If the globals $Debug etc. are *defined* then the corresponding
+# (downcased) options default accordingly when new sheets are created.
+use Spreadsheet::Edit::OO qw(oops %pkg2currsheet $Debug $Verbose $Silent);
 
 use parent "Exporter::Tiny";
 require mro; # makes next::can available
@@ -168,11 +170,6 @@ our @CARP_NOT = qw(Spreadsheet::Edit::OO
 use File::Basename qw(basename dirname);
 use Scalar::Util qw(blessed refaddr);
 
-# Default options can be set globally for new sheets created via procedural API.
-our $verbose;
-our $debug;
-our $silent;
-
 sub __validate_sheet_arg($) {
   my $sheet = shift;
   croak "Argument '${\u($sheet)}' is not a Spreadsheet::Edit sheet object"
@@ -187,9 +184,7 @@ sub fmt_sheet($) {
   oops($sheet) unless blessed($sheet);
   my $s = $sheet->sheetname() || $sheet->data_source();
   if (length($s) > $trunclen) { $s = "...".substr($s,-($trunclen-3)) }
-  #$s = "$sheet;$s";
-  $s = sprintf("REF(%x)%s", refaddr($sheet), $s);
-  return $s ? qsh($s) : "$sheet";
+  sprintf("REF(%x) %s", refaddr($sheet), vis($s));
 }
 
 # subname calling caller of caller (or specified level's caller)
@@ -202,32 +197,38 @@ sub __callingsub(;$) {
 
 sub __default_options_cl1($$) {
   my ($opts, $cl) = @_;
-  # Default from previous 'current sheet', if any, else from globals if set.
+  # Default from previous 'current sheet', if any.
+  # N.B. The global variables $Verbose etc. are used in the "new" method
   if (my $sheet = $pkg2currsheet{scalar(caller(1+$cl))}) {
     foreach my $key (qw/verbose silent debug/) {
-      $opts->{$key} = $$sheet->{$key} if defined($$sheet->{$key}) && ! exists $opts->{$key}
+      unless (defined $opts->{$key}) {
+        $opts->{$key} = $$sheet->{$key};
+      }
     }
   }
-  $opts->{verbose}      = $verbose if defined($verbose) && ! exists $opts->{verbose};
-  $opts->{debug}        = $debug   if defined($debug) && ! exists $opts->{debug};
-  $opts->{silent}       = $silent  if defined($silent) && ! exists $opts->{silent};
 }
 
-sub _newsheet($$@) {
-  my ($pkg, $caller_level_adj, $logthisnew, @rest) = @_;
-  unless ((scalar(@rest) % 2) == 0) {
-    croak __callingsub," does not accept an {OPTIONS} hash"
-      if (ref($rest[0]) eq "HASH");
-    croak "In call to ",__callingsub,
-          " : uneven arg count, expecting key => value pairs"
-          ,dvis('\n## @rest')
-  } 
-  my %opts = @rest;
+sub _newsheet($$$@) {
+  my ($pkg, $caller_level_adj, $dont_log, @rest) = @_;
+  my $opthash = ref($rest[0]) eq "HASH" ? shift(@rest) : {};
+  croak "In call to ",__callingsub,
+        " : uneven arg count, expecting key => value pairs"
+    unless (@rest % 2)==0;
 
-  __default_options_cl1(\%opts, 1);
+  __default_options_cl1($opthash, 1);
+  %$opthash = (%$opthash, @rest);
+  $opthash->{caller_level} = 1+$caller_level_adj;
 
-  my $sheet = Spreadsheet::Edit::OO->new(caller_level => 1+$caller_level_adj, 
-                                         %opts);
+  my $sheet;
+  if ($dont_log) {
+    { local $opthash->{verbose} = 0;
+      $sheet = Spreadsheet::Edit::OO->new($opthash);
+    }
+    # Ugly.  Simulate what happens inside new() after the fact
+    $$sheet->{verbose} = $opthash->{verbose} // $Verbose;
+  } else {
+    $sheet = Spreadsheet::Edit::OO->new($opthash);
+  }
 
   # Make the sheet the caller's "current" sheet for procedural API 
   $pkg2currsheet{$pkg} = $sheet;
@@ -254,12 +255,14 @@ sub __callmethod($@) {
 
   my $sheet = $pkg2currsheet{$pkg};
   if (! $sheet) {
-    $sheet = _newsheet($pkg,2,0);
+    $sheet = _newsheet($pkg,2,1);
   } else {
-    if (@{$sheet->rows} > 0 && $methname eq "read_spreadsheet" 
-         && ! $$sheet->{silent}) {
+    if ($methname eq "read_spreadsheet" && @{$sheet->rows} > 0) {
+      my $silent = ref($_[0]) eq 'HASH' && $_[0]->{silent};
+      $silent ||= $$sheet->{silent};
       carp "WARNING: $methname will over-write existing data",
-           " (",$sheet->data_source,")\n(Set 'silent' to avoid this warning)\n";
+           " (",$sheet->data_source,")\n(Set 'silent' to avoid this warning)\n"
+        unless $silent;
     }
   }
   # +1 for call to us (__callmethod)
@@ -342,7 +345,7 @@ sub write_spreadsheet(*;@) { __callmethod_checksheet("write_spreadsheet", @_) }
 sub write_fixedwidth(*;$) { __callmethod_checksheet("write_fixedwidth", @_) }
 
 # Shift {OPTHASH} arg, if present (returns undef if not)
-sub _opthash {
+sub __opthash {
   ref($_[0]) eq 'HASH' ? shift() : undef
 }
 
@@ -350,7 +353,7 @@ sub __logfuncifv($$@) {   # ($cl, $nesting, @items)
   my $cl = $_[0];
   my $pkg = caller(1 + $cl);
   my $curr = $pkg2currsheet{$pkg};
-  return unless ($curr ? $$curr->{verbose} : $verbose);
+  return unless ($curr ? $$curr->{verbose} : $Verbose);
   goto &Spreadsheet::Edit::OO::__logfunc;
 }
 
@@ -360,7 +363,7 @@ sub __logfuncifv($$@) {   # ($cl, $nesting, @items)
 #
 # Always returns the previous sheet (or undef)
 sub sheet(;$$) {
-  my $opthash = &_opthash // {};  # shifts iff {OPTIONS}
+  my $opthash = &__opthash // {};  # shifts iff {OPTIONS}
   my $pkg = $opthash->{package} // caller();
   my $pkgmsg = $opthash->{package} ? " (pkg $pkg)" : "";
   my $curr = $pkg2currsheet{$pkg};
@@ -392,12 +395,16 @@ sub title2ident($) {
 # exists, so this is only really needed when using more than one sheet,
 # or if you want to initialize a sheet from data in memory.
 sub new_sheet(@) {
-  croak "new_sheet accepts linearlized key => value options, not an {OPTIONS} hash"
-    if ref($_[0]) eq "HASH";
+  my $opthash = &__opthash // {};  # shifts iff {OPTIONS} if present
   my ($pkg, $fname, $line) = caller;
-  my $data_source = "(new_sheet called at ".basename($fname).":$line)";
-  return _newsheet($pkg, 1,             1, data_source => $data_source, @_);
-  #                pkg   $caller_level, $logthisnew, @rest
+
+  $pkg = delete $opthash->{package} if $opthash->{package};
+
+  $opthash->{data_source} 
+    //= "(Sheet created with new_sheet at ".basename($fname).":$line)";
+
+  return _newsheet($pkg, 1,             0,         $opthash, @_);
+  #                pkg   $caller_level, $dont_log, @rest
 }
 
 # logmsg() - Concatenate strings to form a "log message", 
@@ -667,6 +674,11 @@ There is both a procedural and object-oriented API, which work together.
 
 Optionally, tied variables can be used with the procedural API.
 
+Note: This package only handles cell values; there is no provision 
+for processing formatting.  The author has a notion to add format support,
+perhaps integrating with Spreadsheet::Read and Spreadsheet::Write
+or the packages they use.  Please contact the author if you want to help.
+
 =head3 HOW TO IMPORT
 
 By default only functions are imported, but most people will
@@ -811,57 +823,68 @@ the OPTIONS which may be passed to the OO C<new> method.
 
 =head2 alias IDENT => COLSPEC, ... ;
 
-=head2 alias IDENT => qr/regex/, ... ;
+=head2 alias IDENT => qr/regexp/, ... ;
 
 Create alternate identifiers for specified columns.
-Multiple pairs may be given.  
 
-Each IDENT must be a valid Perl identifier which does not correspond 
-to the title of a different column.
+Each IDENT, which must be a valid Perl identifier, will henceforth
+refer to the specified column even if the identifier is the same
+as the title or letter code of a different column.
 
-A Regular Expression must match exactly one column title 
-(otherwise an exception is thrown).
+Specifically, C<$row{IDENT}>, C<$colx{IDENT}> etc., and a 
+tied variable C<$IDENT> will refer to the specified column.
+
+Once created, aliases automatically track the column if it's position
+changes.
+
+Regular Expressions are matched against titles only, and must match
+only one column (otherwise an exception is thrown).   
+Other COLSPECs may be titles, existing alias names, column letters, etc.
+(see "COLUMN SPECIFIERS" for details).
+
+The COLSPEC is evaluated before the alias is created, so
+
+   alias B => "B";
+
+would make "B" henceforth refer to the current second column (or the
+column with title "B" if such exists) even if that column later moves.
 
 RETURNS: In array context, the 0-based column indices of the aliased columns;
 in scalar context the column index of the first alias.
 
-Afterwards, C<$row{IDENT}>, C<$colx{IDENT}> etc. will refer to the column, 
-and will be automatically adjusted to track the column
-if it moves due to insertions etc.
-
 =head2 unalias IDENT, ... ;
 
-Removes column alias(es).
+Forget alias(es).  Any masked COLSPECs become immediately usable.
 
-=head2 spectocx COLSPEC or qr/regex/, ... ;
+=head2 spectocx COLSPEC or qr/regexp/, ... ;
 
 Returns the 0-based indicies of the specified colomn(s).
 Throws an exception if there is no such column.
-A regex may match multiple columns.
+A regexp may match multiple columns.
 See also C<%colx>.
 
-=head2 tie_column_vars "varname", ...
+=head2 tie_column_vars VARNAME, ...
 
-Create tied package variables for use during C<apply>.
+Create tied package variables (scalars) for use during C<apply>.
 
 Each variable is a scalar corresponding to a column, and reading or writing
 it accesses the corresponding cell in the row being visited during C<apply>.
 The variable name itself implies which column it refers to.
-The '$' may be omitted in the varname arguments to C<tie_column_vars>;
+The '$' may be omitted in the VARNAME arguments to C<tie_column_vars>;
 
 You must separately declare these variables with C<our $NAME> 
-(except if called in a BEGIN block -- see below).
+(except if imported or called in a BEGIN block -- see below).
 
 Variable names may be any of:
 
 =over
 
+=item * User-defined alias names (see "alias")
+
 =item * Titles which happen to be valid Perl identifiers
 
 =item * Identifiers derived from titles by replacing offending characters 
 with underscrores (see "AUTOMATIC ALIASES"), 
-
-=item * User-defined alias names (see "alias")
 
 =item * Spreadsheet column letters like "A", "B" etc.  
 
@@ -894,91 +917,78 @@ Print trace messages.
 
 =back
 
-=head2 tie_column_vars ':all' [,"futurevar", ...];
+=head2 tie_column_vars ':all'
 
-With the B<:all> token I<all possible variables> are tied,
-corresponding to the titles, aliases, non-conflicting column letters etc. 
-which exist for the current sheet 
-(plus any specified "futurevar" variables; see discussion below).
+With the B<:all> token I<all possible variables> are tied, corresponding
+to the aliases, titles, non-conflicting column letters etc.  which exist
+for the current sheet.
 
-In addition, variables will be
-tied in the future I<whenever new identifiers become valid> (for
-example when a new C<alias> is created, column added, or another
-spreadsheet read into the same sheet).
+In addition, variables will be tied in the future I<whenever new identifiers
+become valid> (for example when a new C<alias> is created, column added,
+or another spreadsheet read into the same sheet).
 
-Although convenient this is B<insecure> because malicious titles could clobber
-unintended globals; however...
+Although convenient this is B<insecure> because malicious 
+titles could clobber unintended globals.
 
-=head3 Use in BEGIN Blocks
+If VARNAMES are also specified, those variables will be tied
+immediately even if not yet usable; an exception occurs if a tied variable
+is referenced before the corresponding alias or title exists.
 
-When called at compile time C<tie_column_vars> checks that
-variables to be tied do not already exist, eliminating 
-the security risk described above with B<:all>.  
+=head3 Use in BEGIN{} or module import methods
 
-That sounds nice but is practical only if the spreadsheet path is
-constant or can be easily determined within the BEGIN{} block.
-C<Spreadsheet::Edit::Preload> may be convenient in such cases.
+C<tie_column_vars> I<imports> the tied variables into your module,
+or the module specified with package => "pkgname" in {OPTIONS}.
 
-Tied variables are imported into your package; you must not declare
-them yourself when called at compile time (otherwise the security check
-will fail).  
+It is unnecessary to declare tied variables if the import
+occurs before code is compiled which references the variables.  This can
+be the case if C<tie_column_vars> is called in a BEGIN{} block or in the
+C<import> method of a module loaded with C<use>.
 
-However you MUST arrange to have all needed variables tied while in
-the BEGIN{} block or otherwise before code which uses those variables
-is compiled.  This is because you may not declare the variables youself
-so they must be imported (which happens after the security check),
-but importing is only effective if it happens before the compiler sees
-references to the variables.
-
-The optional "futurevar" names are for this purpose; they will be immediately
-checked & tied even if not yet usable.  Other operations which create
-new COLSPEC identifiers will suffice as well, such as C<alias>,
-C<insert_cols>, or C<tie_column_vars> after reading a different spreadsheet.
-As long as all these together tie all the variables you'll need at compile time.
-
-=head2 $rowindex = title_rx ;
+C<Spreadsheet::Edit::Preload> makes use of this.
 
 =head2 title_rx {AUTODETECT_OPTIONS} ;
 
-Retrieve the row index (first is 0) of the row containing titles.
+=head2 title_rx ROWINDEX ;
+
+=head2 $rowindex = title_rx ;
+
+Set or auto-detect the row containing titles.
 Titles are used to generate column-selection keys (COLSPECs).
 
-The title row is auto-detected the first time it is needed by any operation,
-unless disabled (in that case C<title_rx> returns undef).
+It is not necessary to call C<title_rx> unless you want to change 
+auto-detect options from the defaults (including to disable auto-detect),
+or to specify a title row explicitly.  By default, the title row
+is auto-detected the first time any operation needs it.
 
-An optional initial {OPTIONS} hash may contain:
+If C<title_rx> I<is> called, it should be done immediately 
+after calling C<read_spreadsheet> or directly modifying title cells.
+
+An optional initial {OPTIONS} argument may contain:
 
 =over 2
 
  enable     => BOOL, # False to disable auto-detect 
  min_rx     => NUM,  # first rx which may contain the title row.
  max_rx     => NUM,  # maximum rx which may contain the title row.
- first_cx   => NUM,  # first column ix which must contain a valid title
- last_cx    => NUM,  # last column ix which must contain a valid title
- required   => COLSPEC or [COLSPEC,...]  # required title(s)
+ first_cx   => NUM,  # first column ix which must contain required titles
+ last_cx    => NUM,  # last column ix which must contain required titles
+ required   => COLSPEC or [COLSPEC,...]  # any required title(s)
 
 =back
 
-The first row is used which includes the C<required> title(s), if any, 
-and has non-empty titles in all positions.
+The default options are {enable => 1, max_rx => 4}.
+
+The first row is used which includes the C<required> title(s), if any,
+and has non-empty titles in all positions.  
+If C<first_cx> and/or C<last_cx> are specified then columns outside that
+range are ignored and may contain anything.
 
 An exception is thrown when auto-detect is attempted
 if a plausible title row can not be found.
 
-If C<title_rx> is called in a void context (no return value requested), 
-then the options are simply saved for later use.
-
-=head2 title_rx ROWINDEX ;
-
-Explicitly specify the 0-based title row index.
-
-=head2 title_rx undef ;
-
-Revert to having no title row.  Auto-detection will be repeated 
-unless disabled.  
-
-If you directly modify title cells you must set C<title_rx> to undef 
-afterwards to cause the changes to be recognized.
+If you specify {OPTIONS} they will also be saved for later re-use,
+for example after reading a different spreadsheet.
+Specifying C<{}> restores the default options.
 
 =head2 apply {code} ;
 
@@ -1027,7 +1037,7 @@ C<$rx> is the 0-based index of the current row.
 C<@crow> is an array aliased to the current row's cells.
 
 C<%crow> is a hash aliased to the same cells,
-indexed by title, alias, etc. (any COLSPEC).
+indexed by alias, title, letter code, etc. (any COLSPEC).
 
 C<$linenum> is the starting line number of the current row if the
 data came from a .csv file.
@@ -1295,7 +1305,7 @@ Each row object is "dual-typed" (overloaded) to act as either an ARRAY or HASH
 reference to the cells in that row.
 
 When used as a HASH ref, the key may be a 
-column title, alias, letter-code etc. (any COLSPEC).
+alias, column title, letter-code etc. (any COLSPEC).
 When used as an ARRAY ref, the 0-based index specifies the column.
 
 =item @linenums 
@@ -1313,7 +1323,7 @@ of columns in memory.
 =item $title_rx and $title_row
 
 C<$title_rx> contains the 0-based row index of the title row
-and C<$title_row> is an alias for C<$rows[ $title_rx ]>.
+and C<$title_row> is the same as C<$rows[ $title_rx ]>.
 
 The title row is auto-detected by default.  
 See C<title_rx> for how to control this.
@@ -1328,7 +1338,7 @@ is the first row following the title row (or 0 if no title row).
 
 =item %colx (column key => column index)
 
-C<< %colx >> maps titles, aliases, etc. (all currently-valid COLSPECs)
+C<< %colx >> maps aliases, titles, etc. (all currently-valid COLSPECs)
 to the corresponding zero-based column indicies.   See "COLSPECS" .
 
 =item %colx_desc (column key => "debugging info")
@@ -1337,28 +1347,35 @@ to the corresponding zero-based column indicies.   See "COLSPECS" .
 
 =head1 COLSPECs (COLUMN SPECIFIERS)
 
-Arguments which specify columns using a hash key may be:
+Arguments which specify columns may be:
 
 =over
 
-=item (1) '^' or '$' (means first or last column, respectively)
+=item (1) a user-defined alias identifier 
 
-=item (2) an actual "column title"
+=item (2) an actual "column title" **
 
-=item (3) a user-defined alias identifier 
+=item (3) a title with any leading & trailing spaces removed *
 
-=item (4) a title with any leading & trailing spaces removed
+=item (4) an AUTOMATIC ALIAS identifier *
 
-=item (5) an AUTOMATIC ALIAS identifier
+=item (5) a spreadsheet letter code (A,B,...Z, AA etc.) *
 
-=item (6) a spreadsheet letter code (A,B,...Z, AA etc.)
+=item (6) a Regexp (qr/.../) which matches an actual title
 
-=item (7) a 0-based numeric column index
+=item (7) a numeric column index (0-based)
+
+=item (8) '^' or '$' (means first or last column, respectively)
+
 
 =back
 
-(The last four may not be used if they conflict with a column
-title or user-defined alias.)
+*These may only be used if they do not conflict an
+item listed higher up.
+
+**Titles may be used directly if they can't be confused with 
+a user-defined alias, the special names '^' or '$' or a numeric 
+column index.  See "CONFLICT RESOLUTION".
 
 B<AUTOMATIC ALIASES> are Perl I<identifiers> derived from column titles by 
 first removing leading or trailing spaces, and then
@@ -1381,29 +1398,45 @@ and as bareword keys to C<%colx>, C<%crow> and related OO interfaces,
 CONFLICT RESOLUTION
 
 A conflict occurs when a column key potentially refers to multiple 
-columns. For example, the standard spreadsheet column name "A" can
-not be used to refer to the first column if a different column has 
-has the title "A".
+columns. For example, "A", "B" etc. are standard column
+names, but they might also be titles of other columns in which
+case those names refer to the other columns.
 Warnings are printed about conflicts unless the C<silent> option 
 is true (see C<options>).
 
 =over
 
-The special names '^' and '$' always refer to the first and last column.
+B<User alias identifiers> (defined using C<alias>) are always valid.
 
-B<Actual Titles> may always be used (except for '^' or '$').
+'^' and '$' always refer to the first and last column.
 
-B<User Aliases> (defined using C<alias>) are always valid.  
-This is enforced by throwing an exception if an alias is defined 
-which conflicts with an actual title.
+Numeric "names" 0, 1, etc. always give a 0-based column index
+if the value is between 0 and num_cols (i.e. one past the end).
 
-B<ABC column names> ("A", "B", etc.), B<numeric column indicies> 
-and B<Automatic Aliases> are available as column keys 
-only if they do not conflict with a Title or user-defined Alias.
+B<Actual Titles> refer to to their columns, except if they:
+
+=over
+
+are the same as a user-defined alias
+
+are '^' or '$'
+
+consist only of digits (without leading 0s) corresponding
+to a valid column index.
 
 =back
 
-Note: Column positions always refer to data before a command is
+B<Automatic Aliases> and B<Standard column names> ("A", "B", etc.)
+are available as column keys 
+unless they conflict with a user-defined alias or an actual title.
+
+=back
+
+Note: To unconditionally refer to numeric titles or titles which
+look like '^' or '$', use a Regexp B<qr/.../>.
+Automatic Aliases can also refer to such titles if there are no conflicts.
+
+Column positions always refer to data before a command is
 executed. This is relevant for commands which re-number or delete columns.
 
 =head1 OO DESCRIPTION (OBJECT-ORIENTED INTERFACE)
@@ -1474,9 +1507,8 @@ Spreadsheet::Edit::Preload
 
 =head1 BUGS
 
-Spreadsheet formats have only vestigial support, and this support is likely
-to be entirely replaced by a richer scheme (implemented using Spreadsheet::Read 
-and friends).  Watch this space!
+Some vestigial support for formats remains from an earlier implementation,
+but this support is likely to be entirely replaced at some point.
 
 Spreadsheets are currently read using the external programs C<gnumeric>
 or C<unoconv> to convert to a temporary CSV file.   
@@ -1492,6 +1524,19 @@ The author wonders whether tied variables are compatible with
 the implementation of threads::shared. 
 Even the OO API uses tied variables (for the magical row objects 
 which behave as either an array or hash reference).
+
+=head1 FUTURE IDEAS
+
+=over 4
+
+=item Add format-processing support.
+
+=item Add "column-major" views, to access a whole column as an array.
+Perhaps C<@cols> and C<%cols> would be sets of column arrays 
+(@cols indexed by column index, %cols indexed by any COLSPEC).
+And C<tie_column_vars '@NAME'> would tie user array variables to columns.
+
+=back
 
 =head1 AUTHOR / LICENSE
 
