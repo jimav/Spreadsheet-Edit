@@ -82,7 +82,7 @@ sub import {
           List::Util->import::into($target, qw(min max first sum0));
 
   require Guard; 
-          Guard->import::into($target, qw(scope_guard));
+          Guard->import::into($target, qw(scope_guard guard));
 
   require Text::CSV::Spreadsheet; 
           Text::CSV::Spreadsheet->import::into($target, qw(let2cx cx2let));

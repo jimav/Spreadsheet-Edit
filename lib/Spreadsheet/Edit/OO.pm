@@ -10,6 +10,10 @@ use utf8;
 #
 # TODO: Need api to *read* options without changing them
 
+# TODO: Allow & support undef cell values (see Text::CSV_XS), used to 
+#       represent "NULL" when interfacing with database systems. 
+#       OTOH, this conflicts with failed optional alias keys
+
 # TODO: Add some way to exit an apply() early, e.g. return value?
 #       or maybe provide an abort_apply(resultval) function
 #       which throws an exception we can catch in apply?
@@ -38,7 +42,7 @@ our ($Debug, $Verbose, $Silent);
 
 # Exporting only for Spreadsheet::Edit.pm
 use Exporter 'import';
-our @EXPORT_OK = qw(oops %pkg2currsheet $Debug $Verbose $Silent); 
+our @EXPORT_OK = qw(cx2let let2cx oops %pkg2currsheet $Debug $Verbose $Silent); 
 
 use Data::Dumper::Interp;
 
@@ -53,6 +57,7 @@ use List::Util qw(min max sum0 first any all pairs pairgrep);
 use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename dirname fileparse);
 use Symbol qw(gensym);
+#use POSIX qw(INT_MAX);
 
 use Text::CSV;
 
@@ -60,23 +65,40 @@ use Text::CSV;
 require Tie::Indirect;
 use Text::CSV::Spreadsheet qw(
    OpenAsCsv @sane_CSV_read_options @sane_CSV_write_options
-   cx2let let2cx cxrx2sheetaddr convert_spreadsheet);
+   convert_spreadsheet);
 
+#sub __tracecall() {
+#  my $s = "";
+#  for (my $lvl=1 ; ; ++$lvl) {
+#    my ($pkg, $fname, $lno, $called_sub) = caller($lvl);
+#    my $calling_subr = (caller($lvl+1))[3];
+#    last unless defined $calling_subr;
+##    if ($pkg eq "Spreadsheet::Edit") { # omit wrappers
+##      $s .= ($s =~ /[^\<]$/s ? " <" : "<");
+##      next;
+##    }
+#    $s .= " < " if $s;
+#    $calling_subr =~ s/.*:://;
+#    $s .= "${lno}:$calling_subr";
+#    last if $pkg eq "main";
+#  }
+#  $s
+#}
 sub __tracecall() {
   my $s = "";
   for (my $lvl=1 ; ; ++$lvl) {
-    my ($pkg, undef, $lno) = caller($lvl);
-    my $calling_subr = (caller($lvl+1))[3];
-    last unless defined $calling_subr;
-    if ($pkg eq "Spreadsheet::Edit") { # omit wrappers
-      $s .= ($s =~ /[^\<]$/s ? " <" : "<");
-      next;
-    }
-    $s .= " < " if $s;
+    my ($pkg, $fname, $lno, $called_subr) = caller($lvl);
+    last if !defined($pkg);
+    $fname //= "";
+    $lno //= "";
+    my $calling_subr = (caller($lvl+1))[3] // "[no sub]";
+    $fname =~ s#.*/##;
     $calling_subr =~ s/.*:://;
-    $s .= "$lno;$calling_subr";
-    last if $pkg eq "main";
+    $called_subr =~ s/.*:://;
+    #$s .= "\n   ".($lvl-1).": ${fname}:${lno} $calling_subr called $called_subr";
+    $s .= "\n   ".($lvl-1).": $called_subr called from $calling_subr at ${fname}:${lno}";
   }
+  $s .= "\n";
   $s
 }
 
@@ -108,7 +130,7 @@ sub to_hash(@)   {
   { to_array(@_) }
 }
 
-sub __fmt_colspec_cx($$) {  # "cx NN" or "COLSPEC [cx NN]"
+sub __fmt_colspec_cx($$) {  # "cx NN" or "COLSPEC [cx NN]" or "<colspec> (NOT DEFINED)" if undef cx
   my ($colspec, $cx) = @_;
   if (ref($colspec) eq "Regexp") {
     state $delimsets = [
@@ -123,9 +145,11 @@ sub __fmt_colspec_cx($$) {  # "cx NN" or "COLSPEC [cx NN]"
   } else {
     $colspec = visq($colspec);
   }
+  return "$colspec (NOT DEFINED)" 
+    if ! defined $cx;
   $colspec eq "$cx" ? "cx $cx" : "$colspec [cx $cx]"
 }
-sub __fmt_cx($) { my ($cx) = @_; "cx $cx (".cx2let($cx).")" }
+sub __fmt_cx($) { my ($cx) = @_; return "(undefined)" unless defined $cx; "cx $cx=".cx2let($cx) }
 
 # Format word,word,... without parenthesis.  Non-barewords will be quoted.
 sub __fmt_uqlist(@) { join(",",map{quotekey} @_) }
@@ -201,14 +225,17 @@ sub _unindexed_title { #method for test programs
   __unindexed_title(shift(), $$self->{num_cols});
 }
 
-# Format %colx "intelligently". cx values are shown only for keys which
-# might be mistaken for absolute column references.  With final newline.
+# Format defined elements of %colx "intelligently".  cx values are shown only 
+# for keys which might be mistaken for absolute column references.  
+# Undef values (from alias {optional => 1}) are omitted since they are not currently valid.
+# With final newline.
 sub _fmt_colx(;$$) {
   my $self = shift;
   my ($indent, $foldwidth) = @_;
   my ($colx, $num_cols) = @$$self{qw{colx num_cols}};
-  my %hash = ( %$colx );  # make a copy
-  my sub cxsort(@) { sort { $colx->{$a} <=> $colx->{$b} } @_ }
+  # copy %$colx omitting keys with undef cx
+  my %hash = map{ defined($colx->{$_}) ? ($_ => $colx->{$_}) : () } keys %$colx;
+  my sub sortbycx(@) { sort { ($colx->{$a}//-1) <=> ($colx->{$b}//-1) } @_ }
   my sub subset($) { # format items, deleting from %hash
     my $specs = shift;
     my (@items, $curr, $curr_desc);
@@ -251,39 +278,54 @@ sub _fmt_colx(;$$) {
                             } 0..$num_cols-1 ];
   __fill [
            @ABCs,
-           subset [cxsort grep{ /^(=.*\D)\w+$/ } keys %hash], # normal titles
-           subset [cxsort grep{ /^\d+$/ } keys %hash],        # numeric titles
-           subset [cxsort keys %hash],                        # oddities
+           subset [sortbycx grep{ /^(=.*\D)\w+$/ } keys %hash], # normal titles
+           subset [sortbycx grep{ /^\d+$/ } keys %hash],        # numeric titles
+           subset [sortbycx keys %hash],                        # oddities
          ], $indent, $foldwidth
 }
 
-# Caller's caller (+ specified additional levels)
-# Results are "edited for simplicity"
-sub __callingcaller(;$) {
+# 
+# "Your caller's caller"; called from arg-checking functions.
+# This is the caller(x) result describing the call to your caller
+#   (+ specified additional levels)
+#  caller(0) describes the call to us, i.e. __callingcaller
+#  caller(1) describes the call to our caller, e.g. an arg-checker func
+#  caller(2) describes the call to our caller's caller, e.g. a public method
+# File and sub names are "edited for simplicity"
+# An optional 2nd argument indicates that the calling package must be user code
+sub __callingcaller(;$$) {
   my $exlevels = $_[0] // 0;
-  # caller(0) is call to us
-  # caller(1) is call to our caller
-  # caller(2) is call to our caller's caller
-  my @c = caller(1 + $exlevels); 
-  oops dvis '$exlevels 1+exlevels->', avis((caller(1+$exlevels))[0..3]) unless @c;
-  if ($c[0] =~ /Spreadsheet::Edit($|::OO$)/) {
-    oops dvis 'BUG: caller level incorrect ($exlevels @c[0..3])\n   ',
-         __tracecall();
+  my $levels = 2 + $exlevels;
+  my @c = caller($levels); 
+  oops dvis '$levels is OFF END\n', __tracecall() unless @c;
+  if ($_[1]) {
+    if ($c[0] =~ /Spreadsheet::Edit($|::OO$)/) {
+      oops dvis 'BUG: caller_level too small? [$exlevels $levels @c[0..3]]\n   ',
+           __tracecall();
+    }
+    if ( (caller($levels-1))[0] !~ /Spreadsheet::Edit($|::OO$)/ ) {
+      oops dvis 'BUG: caller_level too LARGE? [$exlevels $levels @c[0..3]]\n   ',
+           __tracecall();
+    }
   }
   $c[1] = basename($c[1]); # filename
-  $c[3] =~ s/.*:://;       # subroutine
+  $c[3] =~ s/.*:://;       # subroutine sans package
   @c
 }
-# The subname containing the call to us (+ specified levels up)
-sub __callingsub(;$) { ( __callingcaller(0 + (shift()//0)) )[3] }
+# "The name of the method calling you";
+# Like __callingcaller but returns just the sub/method name 
+sub __callingsub(;$) { ( __callingcaller(1 + (shift()//0)) )[3] }
 
-# caller's caller + {caller_level} additional levels
+# "Your caller" + {caller_level} additional levels + additional specified.
+# {caller_level} must be set so that we reach a user sub
 sub _caller { #METHOD
-  my $self = shift;
+  my ($self, $extra) = @_;
+  $extra //= 0;
   my $caller_level = $$self->{caller_level};
-  __callingcaller(1 + (shift()//0) + $caller_level)
+  # We are in the "arg-checker func" position for _callingcaller()
+  my @c = __callingcaller($caller_level + $extra, 1)
 }
-sub _caller_pkg { (_caller($_[0],1))[0] }
+sub _caller_pkg { ($_[0]->_caller(1))[0] }
 
 sub __self_opthash { # shift off $self and optional/default-empty {OPTIONS} hash
   my $self = shift;
@@ -292,12 +334,13 @@ sub __self_opthash { # shift off $self and optional/default-empty {OPTIONS} hash
 }
 sub __self_noopthash { # shift off $self; verify no {OPTIONS} hash
   my $self = shift;
-  croak __callingsub(), " does not accept an {OPTIONS} hash\n"
+  croak __callingsub, " does not accept an {OPTIONS} hash\n"
     if ref($_[0]) eq 'HASH';
   $self
 }
 sub __selfonly {
-  confess __callingsub(), " expects no arguments!\n" if @_ != 1;
+  oops "Bug: __selfonly must be called with '&' to preserve args" if @_ == 0;
+  confess __callingsub, " expects no arguments!\n" if @_ != 1;
   shift()
 }
 
@@ -305,12 +348,12 @@ sub __self_opthash_Nargs($@) {  # (num_expected_args, @_)
   my $Nargs = shift;
   my ($self, $opthash) = &__self_opthash;
   #croak
-  croak __callingsub(), " expects $Nargs arguments, not ",scalar(@_),"\n"
+  croak __callingsub, " expects $Nargs arguments, not ",scalar(@_),"\n"
     if $Nargs != @_;
   ($self, $opthash, @_)
 }
 sub __self_opthash_0args { unshift @_,0; goto &__self_opthash_Nargs }
-sub __self_opthash_1arg { unshift @_,1; goto &__self_opthash_Nargs }
+sub __self_opthash_1arg  { unshift @_,1; goto &__self_opthash_Nargs }
 sub __self_opthash_2args { unshift @_,2; goto &__self_opthash_Nargs }
 sub __self_opthash_3args { unshift @_,3; goto &__self_opthash_Nargs }
 
@@ -383,12 +426,12 @@ sub __first_ifnot_wantarray(@) {
   my $wantarray = (caller(1))[5];
   return @_ if $wantarray;
   return $_[0] if @_;
-  croak __callingsub(), " called in scalar context but that method does not return a result.\n"
+  croak __callingsub, " called in scalar context but that method does not return a result.\n"
     if defined($wantarray);
 }
 sub __validate_not_scalar_context(@) {
   my $wantarray = (caller(1))[5];
-  croak __callingsub(1), " returns an array, not a scalar" 
+  croak __callingsub, " returns an array, not a scalar" 
     unless $wantarray || !defined($wantarray);
   @_
 }
@@ -402,6 +445,21 @@ sub _carponce { # if not silent
     unless $$self->{silent}; # never appears even if silent is later unset
 }
 
+# Default argument is $_
+sub cx2let(_) {
+  my $cx = shift;
+  my $ABC="A"; ++$ABC for (1..$cx);
+  return $ABC
+}
+sub let2cx(_) {
+  my $ABC = shift;
+  my $n = ord(substr($ABC,0,1,"")) - ord('A');
+  while (length $ABC) {
+    my $letter = substr($ABC,0,1,"");
+    $n = (($n+1) * 26) + (ord($letter) - ord('A'));
+  }
+  return $n;
+}
 
 ###################### METHODS #######################
 
@@ -660,6 +718,9 @@ sub _tiecell_helper {
                 // croak "No sheet is currently valid for package $pkg\n";
   local $$sheet->{caller_level} = $$sheet->{caller_level} + 1;
   $sheet->_onlyinapply("tied variable \$$ident");
+
+  # WRONG... it croaks bc sheet->{rows}->[rx] is a rowhash which doesn't like undef keys
+  # WRONG: This returns \undef if $ident is not currently valid
   \( $$sheet->{rows}->[$$sheet->{current_rx}]->{$ident} )
 }
 
@@ -689,8 +750,6 @@ sub tie_column_vars {
   local $$self->{verbose} = $opts->{verbose} // $$self->{verbose};
   local $$self->{debug}   = $opts->{debug} // $$self->{debug};
 
-  my ($rows, $debug, $num_cols) = @$$self{qw/rows debug num_cols/};
-
   my $pkg = $opts->{package} // $self->_caller_pkg;
 
   my (%tokens, @varnames);
@@ -706,12 +765,15 @@ sub tie_column_vars {
   # that variables do not already exist immediately before tying them; 
   # otherwise an exception is thrown.
   #
-  # Furthermore, with ':all' variables will not be checked & tied 
+  # When combined with ':all' variables will not be checked & tied 
   # except during compile time, i.e. within BEGIN{...}.  Therefore a 
   # malicious spreadsheet can not cause an exception after the compilation
   # phase.
   my $safe = delete $tokens{':safe'};
   my $parms = [$safe, ($self->_caller())[1,2]]; # [safearg, file, lineno]
+
+  # Why? Obsolete? Only for :all?? [note added Dec22]
+  $self->title_rx($opts->{title_rx}) if exists $opts->{title_rx};
 
   if (delete $tokens{':all'}) {
     # Remember parameters for tie operations which might occur later
@@ -720,8 +782,6 @@ sub tie_column_vars {
     push @varnames, sort $self->_all_valid_idents;
   }
   croak "Unrecognized token in arguments: ",avis(keys %tokens) if %tokens;
-  
-  $self->title_rx($opts->{title_rx}) if exists $opts->{title_rx};
 
   my $r = $self->_tie_col_vars($pkg, $parms, @varnames);
 
@@ -751,9 +811,9 @@ sub sheetname { ${&__selfonly}->{sheetname} }
 sub iolayers { ${&__selfonly}->{iolayers} }
 sub meta_info {${&__selfonly}->{meta_info} }
 sub input_encoding {
-  # Emulate old API.  We actually store input_iolayers instead not,
+  # Emulate old API.  We actually store input_iolayers instead now,
   # so as to include :crlf if necessary.
-  my $self = __selfonly;
+  my $self = &__selfonly;
   local $_;
   return undef unless
     exists(${$self}->{input_iolayers})
@@ -1047,7 +1107,9 @@ sub _rebuild_colx {
   my %useralias;
   foreach my $alias (keys %$useraliases) {
     my $cx = $colx->{$alias};
-    next if !defined($cx);  # the referenced column was deleted
+    # cx may be undef if referenced column was deleted and/or if 
+    # an alias was created with {optional => TRUE} with non-matching regex.
+    #next if !defined($cx);  # the referenced column was deleted
     $useralias{$alias} = [$cx, $colx_desc->{$alias}];
   }
 
@@ -1077,14 +1139,14 @@ sub _rebuild_colx {
     # Add non-conflicting titles
     my $indexed_titles = $self->_get_indexed_titles;
     while (my ($title, $cx) = each %$indexed_titles) {
-      __putback($title, $cx, "cx $cx: Title");
+      __putback($title, $cx, __fmt_cx($cx).": Title");
     }
     # Titles with leading & trailing spaces trimmed off
     while (my ($title, $cx) = each %$indexed_titles) {
       my $key = $title;
       $key =~ s/\A\s+//s; $key =~ s/\s+\z//s;
       if ($key ne $title) {
-        __putback($key, $cx, "cx $cx: Title trimmed of lead/trailing spaces");
+        __putback($key, $cx, __fmt_cx($cx).": Title trimmed of lead/trailing spaces");
       }
     }
     # Automatic aliases
@@ -1094,7 +1156,7 @@ sub _rebuild_colx {
       my $title = $title_row->[$cx]; 
       next if $title eq "";
       my $ident = __title2ident($title);
-      __putback($ident, $cx, "cx $cx: Automatic alias for title");
+      __putback($ident, $cx, __fmt_cx($cx).": Automatic alias for title");
     }
   } else {
     if ($self->_autodetect_enabled) {
@@ -1202,6 +1264,7 @@ sub _specs2cxdesclist {
                vis($title_row),"\n-----------------\n",
                "Regex $spec\n",
                "does not match any of the titles (see above) in '$$self->{data_source}'\n"
+        # N.B. check for "does not match" in alias()
       }
       next
     }
@@ -1211,7 +1274,7 @@ sub _specs2cxdesclist {
   oops unless wantarray;
   @results
 }#_specs2cxdesclist
-sub _spec2cx {  # return $cx or ($cx, $desc)
+sub _spec2cx {  # return $cx or ($cx, $desc); throws if spec is invalid
   my ($self, $spec) = @_;
   my @list = $self->_specs2cxdesclist($spec);
   if (@list > 1) {
@@ -1231,6 +1294,7 @@ sub _colspec2cx {
 # THROWS if a spec does not indicate any existing column.
 # Auto-detects the title row if appropriate.
 # Can return multiple results, either from multple args or Regexp multimatch
+# In scalar context returns the first result.
 sub spectocx { # the user-callable API
   my $self = shift;
   my @list = $self->_specs2cxdesclist(@_);
@@ -1258,7 +1322,12 @@ sub _relspec2cx {
 }
 
 sub alias {
-  my $self = &__self_noopthash;
+  my ($self, $opthash) = &__self_opthash;
+  if ($opthash) {
+    __validate_opthash($opthash, 
+                       [qw(optional)],
+                       "alias option");
+  }
   croak "'alias' expects an even number of arguments\n"
     unless scalar(@_ % 2)==0;
 
@@ -1279,17 +1348,18 @@ sub alias {
     # they will not auto-detect if handed an "absolute" colspec like "A".
     $self->_autodetect_title_rx_ifneeded_cl1()
       unless defined($$self->{title_rx}) or __unindexed_title($spec, $num_cols);
-    say '##alias: title_rx = ', vis($$self->{title_rx}) if $debug;
     
-    # Descriptions are like "cx N" or "cx N: regex matched title '...'"
-    my ($cx, $desc) = $self->_spec2cx($spec); # throws if invalid
-    #$desc = "alias for ".$desc;
-    $desc = "alias for cx $cx (".quotekey($spec).")";
-
-    $self->_logmethifv(\"$ident => ",\__fmt_colspec_cx($spec,$cx));
-
+    my $cx = eval{ $self->_spec2cx($spec) };
+    unless(defined $cx) {
+      oops unless $@;
+      croak $@ unless $opthash->{optional} && $@ =~ /does not match/is;
+      # Always throw on other errors, e.g. regex matches more than one title
+    };
+    $self->_logmethifv(
+               (%$opthash ? ($opthash,\" ") : ()),
+               \"$ident => ",\__fmt_colspec_cx($spec,$cx));
     $colx->{$ident} = $cx;
-    $colx_desc->{$ident} = $desc;
+    $colx_desc->{$ident} = "alias for ".__fmt_cx($cx)." (".quotekey($spec).")";
     $useraliases->{$ident} = 1;
     push @cxlist, $cx;
   }
@@ -1436,8 +1506,7 @@ sub _autodetect_title_rx_ifneeded_cl1 {
       local $$self->{silent}  = 1; #
       # Find the first row with all required titles within the column range, 
       # OR non-empty titles in all positions.
-      say '#START autodetect from ',__tracecall(),
-          dvis '\n  : @required_specs $colx' if $debug;
+      #say '#START autodetect from ',__tracecall(), dvis '\n  : @required_specs $colx' if $debug;
       RX: for my $rx ($min_rx .. min($max_rx,$#$rows)) {
         say "#   ",$nd_reasons[-1] if $debug && @nd_reasons;
         local $$self->{caller_level} = $$self->{caller_level} + 1;
@@ -1465,7 +1534,7 @@ sub _autodetect_title_rx_ifneeded_cl1 {
         my ($found_nonempty, $empty_cx);
         foreach ($first_cx .. $last_cx) {
           if ($row->[$_] eq "") {
-            push @nd_reasons, ivis 'rx $rx: cx $_ is empty';
+            push @nd_reasons, ivis 'rx $rx: col cx $_ (col '.cx2let($_).') is empty';
             next RX;
           }
         }
@@ -1514,7 +1583,7 @@ sub last_data_rx {
   $self->_logmethifv($rx);
   if (defined $rx) {
     $self->_check_rx($rx, 1); # one_past_end_ok=1
-    confess __callingsub(0).": last_data_rx must precede first_data_rx"
+    confess "last_data_rx must be >= first_data_rx"
       unless $rx >= ($$self->{first_data_rx}//0);
   }
   $$self->{last_data_rx} = $rx;
@@ -1994,7 +2063,7 @@ sub delete_row { goto &delete_rows; }
 sub insert_rows {
   my $self = shift;
   my ($rx, $count) = @_;
-  $rx //= 'LAST';
+  $rx //= 'END';
   $count //= 1;
 
   my ($rows, $linenums, $num_cols, $title_rx, $first_data_rx, $last_data_rx)
@@ -2027,6 +2096,8 @@ sub insert_row { goto &insert_rows; }
 # read_spreadsheet $inpath [Text::CSV::Spreadsheet options...]
 # read_spreadsheet $inpath [,iolayers =>...  or encoding =>...]
 # read_spreadsheet $inpath [,{iolayers =>...  or encoding =>... }] #OLD API
+
+# read_spreadsheet [{iolayers =>...  or encoding =>... }, ] $inpath #NEW API
 sub read_spreadsheet {
   my ($self, $opts, $inpath) = &__self_opthash_1arg;
 
@@ -2039,14 +2110,15 @@ sub read_spreadsheet {
   }
   $csvopts{escape_char} = $csvopts{quote_char}; # " : """
 
-  croak "Obsolete {sheet} key in options" if exists $opts->{sheet};
+  croak "Obsolete {sheet} key in options (use 'sheetname')" 
+    if exists $opts->{sheet};
 
   { my %notok = %$opts;
     delete $notok{$_} foreach (
       qw/iolayers encoding verbose silent debug/,
       # N.B. This used to include 'quiet' but it did not do anything
       qw/tempdir use_gnumeric/,
-      qw/sheet/, # for Text::CSV::OpenAsCsv
+      qw/sheetname/, # for Text::CSV::Spreadsheet::OpenAsCsv
     );
     croak "Unrecognized OPTION(s): ",alvisq(keys %notok) if %notok;
   }
@@ -2108,7 +2180,8 @@ sub read_spreadsheet {
   }
   close $fh || croak "Error reading $hash->{csvpath}: $!\n";
 
-  $$self->{data_source} = $inpath;
+  $$self->{data_source} = $hash->{inpath}
+    .($hash->{sheetname} ? "!".$hash->{sheetname} : "");
 
   $self->_rows_replaced;
 }#read_spreadsheet
@@ -2179,6 +2252,22 @@ sub write_csv {
   #  oops "UNDEF row" unless defined $row;  # did user modify @rows?
   #  $csv->print ($fh, $row);
   #};
+  
+  # 5/2/22 FIXME: Maybe meta_info could be used when writing, albiet in
+  # a grotesque way:
+  #   If keep_meta_info is set > 9, then the output quotation style is
+  #   "like it was used in the input of the the last parsed record"; so
+  #   we could "parse" a dummy record to set the quote style before writing
+  #   each record, like this (see perldoc Text::CSV_XS "keep_meta_info"):
+  #     my $csv = Text::CSV_XS->new({ binary=>1, keep_meta_info=>11, 
+  #                                   quote_space => 0 });
+  #     apply_all {
+  #       my $minfo = $meta_info[$rx];
+  #       my @dummy = map{ '', 'x', '""' or '"x'' } @$minfo; # HOW?
+  #       $csv->parse(join ",", @dummy); # set saved meta_info
+  #       $csv->print(*OUTHANDLE, $row);
+  #     }
+  #   
 
   # Much of the option handling code was copied from Text::CSV_PP.pm
   # which depends on default values of options we don't specify explicitly.
@@ -2419,15 +2508,24 @@ sub TIEHASH {
   $o
 }
 sub _cellref {
-  my ($cells, $sheet) = @{ ${ shift() } };
-  my $key = shift;
+  my ($cells, $sheet) = @{ ${ shift() } };  # First arg is 'self'
+  my $key = shift;                          # Second arg is key
+  my $mutating = @_;                        # Third arg exists only for STORE
   my $colx = $$sheet->{colx};
   my $cx = $colx->{$key};
   if (! defined $cx) {
     $sheet->_autodetect_title_rx_ifneeded_cl1();
-    $cx = $colx->{$key}
-      // croak "'$key' is an unknown COLSPEC.  The valid keys are:\n",
+    $cx = $colx->{$key};
+  }
+  if (! defined $cx) {
+    exists($colx->{$key})
+      or croak "'$key' is an unknown COLSPEC.  The valid keys are:\n",
                $sheet->_fmt_colx();
+    # Undef colx results from alias({optional => TRUE},...) which failed,
+    # or from an alias which became invalid because the column was deleted.
+      croak "Attempt to write to 'optional' alias '$key' which is currently NOT DEFINED"
+        if $mutating;
+    return \undef # Reading such a column returns undef
   }
   $cx <= $#{$cells}
     // croak "BUG?? key '$key' maps to cx $cx which is out of range!";

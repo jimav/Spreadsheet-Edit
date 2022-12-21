@@ -1,0 +1,14 @@
+This is maintained using Dist::Zilla
+----------------
+
+dzil clean; dzil build && dzil test
+
+dzil release  # now auto-updates version, commits, pushes, and uploads
+
+----------------
+
+Git book: https://git-scm.com/book/en/v2
+
+----------------
+git tag -a v2.18 -m "my version 2.18" # Full bodied "Annotated" tag
+

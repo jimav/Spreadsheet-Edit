@@ -91,9 +91,9 @@ sub expect1($$) {
 }
 
 sub verif_eval_err(;$) {  # MUST be called on same line as the 'eval'
-  my ($ln) = @_;
+  my ($msg_regex) = @_;
   my @caller = caller(0);
-  $ln //= $caller[2];
+  my $ln = $caller[2];
   my $fn = $caller[1];
   confess "expected error did not occur at $fn line $ln\n",
           fmtsheet(sheet({package => $caller[0]}))
@@ -102,10 +102,13 @@ sub verif_eval_err(;$) {  # MUST be called on same line as the 'eval'
   if ($@ !~ / at $fn line $ln\.?(?:$|\n)/s) {
     confess "Got UN-expected err (not ' at $fn line $ln'):\n«$@»\n\n",
             fmtsheet(sheet({package => $caller[0]})) ;
-  } else {
-    verif_no_internals_mentioned($@);
-    dprint "Got expected err: $@\n";
   }
+  if ($msg_regex && $@ !~ qr/$msg_regex/) {
+    confess "Got UN-expected err (not matching $msg_regex) at $fn line $ln'):\n«$@»\n\n",
+            fmtsheet(sheet({package => $caller[0]})) ;
+  }
+  verif_no_internals_mentioned($@);
+  dprint "Got expected err: $@\n";
 }
 
 # Verify that a column title, alias, etc. is NOT defined
@@ -131,12 +134,16 @@ sub check_no_sheet() {
 }
 
 # Returns ($testdata, $csvpath)
+
+our @cleanups;
 sub write_string_to_tmpf($$) {
   my ($id, $string) = @_;
   my $tempfile_pfx = $debug ? "/tmp/string" : "/tmp/td_$$";
   my $path = $tempfile_pfx."_${id}.csv";
   dprint "> Creating $path\n";
   die "$path ALREADY EXISTS" if !$debug && -e $path;
+  push @cleanups, guard { unlink $path } # delete during global destruction
+    unless $debug;
   open(my $fh,">", $path) || die $!;
   print $fh $string; 
   close $fh || die "Error writing $path :$!";

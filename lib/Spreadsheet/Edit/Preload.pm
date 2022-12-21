@@ -96,6 +96,8 @@ If a title, or the identifier derived from the title, would clash with a
 variable which already exists in the caller's package or in package main, 
 then a fatal error occurs. 
 
+**NOTE December 2022: REVISIT THIS to ensure that this is actually still safe.  Should the currently-undocumented :safe option be used?
+
 =head1 SEE ALSO
 
 Spreadsheet::Edit

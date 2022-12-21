@@ -13,7 +13,8 @@ package Spreadsheet::Edit;
 
 # If the globals $Debug etc. are *defined* then the corresponding
 # (downcased) options default accordingly when new sheets are created.
-use Spreadsheet::Edit::OO qw(oops %pkg2currsheet $Debug $Verbose $Silent);
+use Spreadsheet::Edit::OO qw(cx2let let2cx 
+           oops %pkg2currsheet $Debug $Verbose $Silent);
 
 use parent "Exporter::Tiny";
 require mro; # makes next::can available
@@ -49,14 +50,15 @@ my @stdvars = qw( $title_rx $first_data_rx $last_data_rx $num_cols
                   @rows @linenums @meta_info %colx %colx_desc $title_row
                   $rx $linenum @crow %crow );
 
-our @EXPORT_OK = (@stdvars, qw/logmsg/);
+our @EXPORT_OK = (@stdvars, qw/logmsg cx2let let2cx/);
 
 our %EXPORT_TAGS = (
       STDVARS => [@stdvars],
       FUNCS   => [@EXPORT],
       default => [':FUNCS'],
       DEFAULT => [':default'],
-      all     => [':STDVARS',':FUNCS'],
+      #all     => [qw(:STDVARS :FUNCS cx2let let2cx logmsg)],
+      all     => [qw(:STDVARS :FUNCS)],
 );
 
 # Although the magic globals $row, $rx and friends are "imported" by 'use', 
@@ -408,10 +410,10 @@ sub new_sheet(@) {
 }
 
 # logmsg() - Concatenate strings to form a "log message", 
-#   prefixed with a description of a sheet and optionally specific row,
-#   and suffixed by a final \n if needed.
+#   prefixed with a description of the "focus" sheet, optionally 
+#   indicating a specific row, and suffixed by a final \n if needed.
 #
-# A "focus" sheet and row, if any, are determined as follows:
+# The "focus" sheet and row, if any, are determined as follows:
 #
 #   If the first argument is a sheet object, [sheet_object],
 #   [sheet_object, rx], or [sheet_object, undef] then the indicated
@@ -471,9 +473,10 @@ sub logmsg(@) {
   my @prefix;
   if (defined $sheet) {
     my $pfxgen = $sheet->attributes->{logmsg_pfx_gen} // \&_default_pfx_gen;
-    push @prefix, "(", (defined($rx) ? "Row ".($rx+1)." " : "");
-    push @prefix, grep{defined} &$pfxgen($sheet, $rx);
-    push @prefix, "): ";
+    push @prefix, "(", 
+                  (defined($rx) ? "Row ".($rx+1)." " : undef),
+                  (grep{defined} &$pfxgen($sheet, $rx)),
+                  "): ";
   }
   my $suffix = (@_ > 0 && $_[-1] =~ /\n\z/s ? "" : "\n");
   return join "", @prefix, @_, $suffix;
@@ -756,7 +759,7 @@ The file may be a .csv or any format supported by Libre Office or gnumeric.
 
 =over 6
 
-=item sheet => SHEETNAME
+=item sheetname => SHEETNAME
 
 Specify which sheet in a workbook (i.e. spreadsheet file) to read.  
 Alternatively, the sheet name may be appended to the input path after '!' as shown in the example.
@@ -873,9 +876,9 @@ The variable name itself implies which column it refers to.
 The '$' may be omitted in the VARNAME arguments to C<tie_column_vars>;
 
 You must separately declare these variables with C<our $NAME> 
-(except if imported or called in a BEGIN block -- see below).
+(except if imported or called in a BEGIN block as explained below).
 
-Variable names may be any of:
+Variable names may be: 
 
 =over
 
@@ -895,11 +898,13 @@ See "CONFLICT RESOLUTION" about name clashes.
 Multiple calls accumulate, including with different sheets.  
 
 Variable bindings are dynamically evaluated during each access by using the
-variable's identifier as a COLSPEC with the 'current sheet'.  This means
-that it does not matter which sheet was 'current' when C<tie_column_vars>
-was called with a particular name; it only matters that a variable name is
-a valid COLSPEC in the 'current sheet' when it is referenced (otherwise an
-exception is thrown).
+variable's identifier as a COLSPEC with the 'current sheet' in your package.  
+This means that it does not matter which sheet was 'current' when C<tie_column_vars>
+was called with a particular name; 
+it only matters that the name of a tied variable is a valid COLSPEC in 
+the 'current sheet' when that variable is referenced
+(otherwise a read returns I<undef> and a write throws an exception).
+[*Need further clarification*]
 
 B<{OPTIONS}> may specify:
 
@@ -934,7 +939,7 @@ If VARNAMES are also specified, those variables will be tied
 immediately even if not yet usable; an exception occurs if a tied variable
 is referenced before the corresponding alias or title exists.
 
-=head3 Use in BEGIN{} or module import methods
+=head2 Use in BEGIN{} or module import methods
 
 C<tie_column_vars> I<imports> the tied variables into your module,
 or the module specified with package => "pkgname" in {OPTIONS}.
@@ -963,7 +968,7 @@ is auto-detected the first time any operation needs it.
 If C<title_rx> I<is> called, it should be done immediately 
 after calling C<read_spreadsheet> or directly modifying title cells.
 
-An optional initial {OPTIONS} argument may contain:
+An optional initial {AUTODETECT_OPTIONS} argument may contain:
 
 =over 2
 
@@ -986,7 +991,7 @@ range are ignored and may contain anything.
 An exception is thrown when auto-detect is attempted
 if a plausible title row can not be found.
 
-If you specify {OPTIONS} they will also be saved for later re-use,
+If you specify {AUTODETECT_OPTIONS} they will also be saved for later re-use,
 for example after reading a different spreadsheet.
 Specifying C<{}> restores the default options.
 
@@ -1001,7 +1006,7 @@ Specifying C<{}> restores the default options.
 Execute the specified code block (or referenced sub) once for each row.
 
 While executing the code block, tied column variables and
-the sheet variables C<@row>, C<%row>, C<$rx> and C<$linenum> 
+the sheet variables C<@crow>, C<%crow>, C<$rx> and C<$linenum> 
 and corresponding OO methods will refer to the row being visited.
 
 C<apply> normally visits all rows which follow the title row, or all rows
@@ -1049,11 +1054,11 @@ many ways:
   alias Name => "FIRST NAME";
   apply {
 
-    $crow{"FIRST NAME"}            # %row indexed by title
+    $crow{"FIRST NAME"}            # %crow indexed by title
     $crow{Name}                    #   using an explicit alias
     $crow{FIRST_NAME}              #   using the AUTOMATIC ALIAS
   
-    $crow[ $colx{"FIRST NAME"} ];  # @row indexed by a 0-based index
+    $crow[ $colx{"FIRST NAME"} ];  # @crow indexed by a 0-based index
     $crow[ $colx{"Name"} ];        #  ...obtained from %colx
     $crow[ $colx{"FIRST_NAME"} ];  # 
   
@@ -1373,7 +1378,7 @@ Arguments which specify columns may be:
 *These may only be used if they do not conflict an
 item listed higher up.
 
-**Titles may be used directly if they can't be confused with 
+**Titles may be used directly if they can not be confused with 
 a user-defined alias, the special names '^' or '$' or a numeric 
 column index.  See "CONFLICT RESOLUTION".
 
