@@ -55,7 +55,7 @@ sub import {
           utf8->import::into($target);
 
   require "open.pm";
-          "open"->import::into($target, IO => ':locale');
+          "open"->import::into($target, ':std', ':encoding(UTF-8)');
 
   strict->import::into($target);
 
@@ -84,8 +84,8 @@ sub import {
   require Guard; 
           Guard->import::into($target, qw(scope_guard guard));
 
-  require Text::CSV::Spreadsheet; 
-          Text::CSV::Spreadsheet->import::into($target, qw(let2cx cx2let));
+  require Spreadsheet::Edit::IO;
+          Spreadsheet::Edit::IO->import::into($target, qw(let2cx cx2let));
 
   # Disable buffering
   STDERR->autoflush(1);

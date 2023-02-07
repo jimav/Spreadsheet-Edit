@@ -20,7 +20,7 @@ use utf8;
 #
 
 # TODO: Use Tie::File to avoid storing entire sheet in memory
-# (requires seekable, so must depend on Text::CSV::Spreadsheet::OpenAsCsv
+# (requires seekable, so must depend on OpenAsCsv
 # copying "-" to a temp file if it is not a plain file).
 
 package Spreadsheet::Edit::OO;
@@ -29,7 +29,7 @@ package Spreadsheet::Edit::OO;
 =pod
 
 =for nothing Spreadsheet::Edit.pm documents functions with all the same
-=for nothing names as methods in here (::OO.pm).  Well, ther emight be
+=for nothing names as methods in here (::OO.pm).  Well, there emight be
 =for nothing a few extra undocumented methods here but not worth worrying about
 
 =for Pod::Coverage *EVERYTHING*
@@ -63,7 +63,11 @@ use Text::CSV;
 
 # OUR CUSTOM STUFF: stop using it?
 require Tie::Indirect;
-use Text::CSV::Spreadsheet qw(
+
+#use Text::CSV::Spreadsheet qw(
+#   OpenAsCsv @sane_CSV_read_options @sane_CSV_write_options
+#   convert_spreadsheet);
+use Spreadsheet::Edit::IO qw(
    OpenAsCsv @sane_CSV_read_options @sane_CSV_write_options
    convert_spreadsheet);
 
@@ -647,6 +651,11 @@ sub _tie_col_vars {
 
   my ($colx, $colx_desc, $debug, $silent)
     = @$$self{qw/colx colx_desc debug silent/};
+  
+  # FIXME: BUG/ISSUE ...
+  #   Why is it correct to keep tiedvarnames PER-SHEET ?
+  #   Isn't this a global property of each package?
+ 
   my $tiedvarnames = ($$self->{pkg2tiedvarnames}->{$pkg} //= {});
 
 #say "#_tie(@_)# ", __tracecall;
@@ -2093,7 +2102,7 @@ sub insert_rows {
 }
 sub insert_row { goto &insert_rows; }
 
-# read_spreadsheet $inpath [Text::CSV::Spreadsheet options...]
+# read_spreadsheet $inpath [Spreadsheet::Edit::IO::OpenAsCSV options...]
 # read_spreadsheet $inpath [,iolayers =>...  or encoding =>...]
 # read_spreadsheet $inpath [,{iolayers =>...  or encoding =>... }] #OLD API
 
@@ -2118,7 +2127,7 @@ sub read_spreadsheet {
       qw/iolayers encoding verbose silent debug/,
       # N.B. This used to include 'quiet' but it did not do anything
       qw/tempdir use_gnumeric/,
-      qw/sheetname/, # for Text::CSV::Spreadsheet::OpenAsCsv
+      qw/sheetname/, # for OpenAsCsv
     );
     croak "Unrecognized OPTION(s): ",alvisq(keys %notok) if %notok;
   }
@@ -2140,7 +2149,7 @@ sub read_spreadsheet {
   my $hash;
   { local $$self->{verbose} = 0;
     $hash = OpenAsCsv(
-                   path => $inpath,
+                   inpath => $inpath,
                    debug => $$self->{debug},
                    verbose => ($$self->{verbose} || $$self->{debug}),
                    %$opts, # all our opts are valid here
@@ -2182,6 +2191,7 @@ sub read_spreadsheet {
 
   $$self->{data_source} = $hash->{inpath}
     .($hash->{sheetname} ? "!".$hash->{sheetname} : "");
+  $$self->{sheetname} = $hash->{sheetname}; # possibly undef
 
   $self->_rows_replaced;
 }#read_spreadsheet
@@ -2223,9 +2233,6 @@ sub write_csv {
 
   my ($rows, $meta_info, $num_cols, $verbose, $debug)
     = @$$self{qw/rows meta_info num_cols verbose debug/};
-
-  local $Text::CSV::Spreadsheet::verbose ||= $verbose;
-  local $Text::CSV::Spreadsheet::debug   ||= $debug;
 
   my $fh;
   if (openhandle($dest)) { # an already-open file handle?
@@ -2532,7 +2539,6 @@ sub _cellref {
   \$cells->[$cx] 
 }
 sub FETCH {
-  my $o = $_[0];
   ${ &_cellref }
 }
 sub STORE {

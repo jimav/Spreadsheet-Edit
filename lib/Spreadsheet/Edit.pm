@@ -665,20 +665,21 @@ Spreadsheet::Edit - Slice and dice spreadsheets, optionally using tied variables
 
 =head1 DESCRIPTION
 
-This package allows easy manipulation of spreadsheet or csv data,
+This package allows easy manipulation of CSV data (or data from a spreadsheet)
 referring to columns by title or absolute position.  Rows and
-columns may be inserted, deleted, or moved.
+columns may be inserted, deleted, or moved. 
 
 The usual paradigm is to iterate over rows applying a function 
 to each, vaguely inspired by 'sed' and 'awk' (see C<apply> below).
 Random access is also supported.
 
-There is both a procedural and object-oriented API, which work together.
+There is both a procedural and object-oriented API, which can work together.
 
 Optionally, tied variables can be used with the procedural API.
 
-Note: This package only handles cell values; there is no provision 
-for processing formatting.  The author has a notion to add format support,
+Note: Only cell I<values> are handled; there is no provision 
+for processing formatting information from spreadsheets.
+The author has a notion to add format support,
 perhaps integrating with Spreadsheet::Read and Spreadsheet::Write
 or the packages they use.  Please contact the author if you want to help.
 
@@ -702,7 +703,7 @@ Each package has its own 'current sheet'.
 
 A new sheet is created by any operation if there no 'current sheet'.
 
-The 'current sheet' may be saved, changed or unset.
+The 'current sheet' may be saved, changed or forgotten (i.e. unset).
 
 Except where noted, each function has a corresponding 
 OO method which operates on the specified object instead of the 'current sheet'.
@@ -809,7 +810,7 @@ See Text::CSV.  UTF-8 encoding is assumed by default.
 
 Due to bugs in Libre/Open Office, spreadsheet files can not
 be read if LO/OO is currently running, even
-for unrelated purposes (be fixed in the future, see "BUGS").
+for unrelated purposes (might be fixed in the future, see "BUGS").
 This problem does not occur with .csv files
 
 =head2 new_sheet  
@@ -834,30 +835,30 @@ Each IDENT, which must be a valid Perl identifier, will henceforth
 refer to the specified column even if the identifier is the same
 as the title or letter code of a different column.
 
-Specifically, C<$row{IDENT}>, C<$colx{IDENT}> etc., and a 
+C<$row{IDENT}>, C<$colx{IDENT}> etc., and a 
 tied variable C<$IDENT> will refer to the specified column.
 
 Once created, aliases automatically track the column if it's position
 changes.
 
 Regular Expressions are matched against titles only, and must match
-only one column (otherwise an exception is thrown).   
-Other COLSPECs may be titles, existing alias names, column letters, etc.
+exactly one column or else an exception is thrown.   
+Other kinds of COLSPECs may be titles, existing alias names, column letters, etc.
 (see "COLUMN SPECIFIERS" for details).
 
 The COLSPEC is evaluated before the alias is created, so
 
    alias B => "B";
 
-would make "B" henceforth refer to the current second column (or the
-column with title "B" if such exists) even if that column later moves.
+would make "B" henceforth refer to the current second column (or a different
+column which has title "B" if such exists) even if that column later moves.
 
 RETURNS: In array context, the 0-based column indices of the aliased columns;
 in scalar context the column index of the first alias.
 
 =head2 unalias IDENT, ... ;
 
-Forget alias(es).  Any masked COLSPECs become immediately usable.
+Forget alias(es).  Any masked COLSPECs become usable again.
 
 =head2 spectocx COLSPEC or qr/regexp/, ... ;
 
@@ -875,8 +876,9 @@ it accesses the corresponding cell in the row being visited during C<apply>.
 The variable name itself implies which column it refers to.
 The '$' may be omitted in the VARNAME arguments to C<tie_column_vars>;
 
-You must separately declare these variables with C<our $NAME> 
-(except if imported or called in a BEGIN block as explained below).
+Normally you must separately declare these variables with C<our $NAME>.
+However not if imported or if C<tie_column_vars> is called in 
+a BEGIN block as explained below).
 
 Variable names may be: 
 
@@ -930,7 +932,7 @@ for the current sheet.
 
 In addition, variables will be tied in the future I<whenever new identifiers
 become valid> (for example when a new C<alias> is created, column added,
-or another spreadsheet read into the same sheet).
+or another file is read into the same sheet).
 
 Although convenient this is B<insecure> because malicious 
 titles could clobber unintended globals.
@@ -975,9 +977,9 @@ An optional initial {AUTODETECT_OPTIONS} argument may contain:
  enable     => BOOL, # False to disable auto-detect 
  min_rx     => NUM,  # first rx which may contain the title row.
  max_rx     => NUM,  # maximum rx which may contain the title row.
+ required   => COLSPEC or [COLSPEC,...]  # any required title(s)
  first_cx   => NUM,  # first column ix which must contain required titles
  last_cx    => NUM,  # last column ix which must contain required titles
- required   => COLSPEC or [COLSPEC,...]  # any required title(s)
 
 =back
 
@@ -1016,8 +1018,7 @@ further limit the range visited.
 
 C<apply_all> unconditionally visits every row, including any title row.
 
-C<apply_torx> or C<apply_exceptrx> visit exactly the specified rows
-or all except the specified rows.
+C<apply_torx> or C<apply_exceptrx> visit exactly the indicated rows.
 RX-OR-RXLIST may be either a single row index or a [list of rx];
 
 Rows may be safely inserted or deleted during 'apply';
@@ -1441,7 +1442,7 @@ Note: To unconditionally refer to numeric titles or titles which
 look like '^' or '$', use a Regexp B<qr/.../>.
 Automatic Aliases can also refer to such titles if there are no conflicts.
 
-Column positions always refer to data before a command is
+Column positions always refer to the data before a command is
 executed. This is relevant for commands which re-number or delete columns.
 
 =head1 OO DESCRIPTION (OBJECT-ORIENTED INTERFACE)
