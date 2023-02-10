@@ -4,7 +4,8 @@
 # related or neighboring rights to this document.  Attribution is requested
 # but not required.
 use strict; use warnings FATAL => 'all'; use utf8;
-use feature qw(say state);
+use feature qw(say state lexical_subs);
+no warnings qw(experimental::lexical_subs);
 
 package Spreadsheet::Edit::IO;
 

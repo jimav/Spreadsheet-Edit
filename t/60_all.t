@@ -1,5 +1,7 @@
 #!/usr/bin/perl
 use strict; use warnings; use feature qw(say state);
+use feature qw(say state lexical_subs);
+no warnings qw(experimental::lexical_subs);
 
 # Run all "subtests" twice:
 #
