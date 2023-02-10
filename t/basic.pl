@@ -796,31 +796,33 @@ foreach ([f => 0], [flt => 0, f => 1, flt => undef], [lt => $#rows],
     my $sheet1 = sheet();
     my $p = sheet();
     bug unless defined($p) && $p == $sheet1;
-    bug unless $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__} == $sheet1;
+    bug unless $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__} == $sheet1;
+    bug unless sheet({package => __PACKAGE__}) == $sheet1;
+    bug if defined sheet({package => "bogopackage"});
 
     # replace with no sheet
     $p = sheet(undef);
     bug unless defined($p) && $p == $sheet1;
-    bug if defined $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__};
+    bug if defined $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__};
     bug if defined eval { my $x = $num_cols; } ; # expect undef or croak
     bug if defined eval { my $x = $A_title;   } ; # expect undef or croak
-    bug if defined $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__};
+    bug if defined $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__};
     $p = sheet();
     bug if defined $p;
-    bug if defined $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__};
+    bug if defined $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__};
     bug if defined sheet();
 
     # put back the first sheet
     $p = sheet($sheet1);
     bug if defined $p;
-    bug unless $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__} == $sheet1;
+    bug unless $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__} == $sheet1;
     apply_torx { bug unless $Gtitle eq "G$rx" } 4;
     check_both('ABCDEFGHIJKLMNO');
 
     # switch to a different sheet
     new_sheet silent => $silent;
     options silent => $silent, verbose => $verbose, debug => $debug;
-    my $sheet2 = $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__};
+    my $sheet2 = $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__};
 
 #-----------------------------------
     my $inpath2 = write_string_to_tmpf("in2", <<'EOF');
@@ -849,7 +851,7 @@ EOF
     # switch back to original sheet
     $p = sheet($sheet1);
     bug unless $p == $sheet2;
-    bug unless $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__} == $sheet1;
+    bug unless $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__} == $sheet1;
     apply { our $TitleP; bug unless $Gtitle eq "G$rx"; 
             check_colspec_is_undef('TitleP');
           };
@@ -868,7 +870,7 @@ EOF
     # Verify that the OO api does not do anything to the "current package"
     sheet(undef);
     { my $obj = Spreadsheet::Edit->new();
-      bug if defined $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__};
+      bug if defined $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__};
     }
     bug if defined sheet();
 
@@ -876,7 +878,7 @@ EOF
     sheet($sheet1);
     { my $tmp;
       apply_torx { die "bug($Gtitle)" unless $Gtitle eq "G2" } [2];
-      sheet( package_active_sheet("Other") );
+      sheet( sheet({package => "Other"}) );
       apply_torx { 
         die "bug($Gtitle)" if defined eval{ $Gtitle };
       } [2];
@@ -887,9 +889,10 @@ EOF
       bug unless @rows==4 && $rows[2]->[0]==314;
       bug unless @Other::myrows==4 && $Other::myrows[2]->[1]==159;
       sheet(undef);
-      bug if defined $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__};
-      bug if defined package_active_sheet(__PACKAGE__);
-      bug if defined $Spreadsheet::Edit::OO::pkg2currsheet{"".__PACKAGE__};
+      bug if defined $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__};
+      bug if defined sheet({package => __PACKAGE__});
+      bug if defined sheet();
+      bug if defined $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__};
       bug if defined sheet();
     }
 

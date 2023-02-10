@@ -16,6 +16,8 @@ our @EXPORT_OK = qw(@sane_CSV_read_options @sane_CSV_write_options
                     sheetname_from_spec filepath_from_spec
                    );
 
+# TODO: Provide "known_attributes" function ala Text::CSV::known_attributes()
+
 use Carp;
 use File::Temp qw(tempfile tempdir);
 use File::Path qw(make_path remove_tree);

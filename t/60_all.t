@@ -53,7 +53,7 @@ for my $st (@subtests) {
   my ($soutput, $swstat) = tee_merged { run_subtest($st, '--silent') };
   if ($swstat != 0) {
     # Diagnostic has already been displayed
-    die "Non-zero exit status"; 
+    die "$soutput\nNon-zero exit status from subtest '$st' --silent"; 
   }
   ok ($soutput eq "", basename($st)." --silent is really silent") or die;
 }

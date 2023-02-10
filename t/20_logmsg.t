@@ -13,7 +13,7 @@ diag "Loaded ",$INC{"Spreadsheet/Edit.pm"};
 
 
 die "oops" unless ! %Spreadsheet::Edit::pkg2currsheet;
-die "oops" unless ! defined $Spreadsheet::Edit::OO::_inner_apply_sheet;
+die "oops" unless ! defined $Spreadsheet::Edit::_inner_apply_sheet;
 
 my $ds1 = "My Source";
 my $sheet1 = new_sheet
@@ -47,7 +47,7 @@ die "oops" unless sheet() == $sheet1;
 
 sheet undef;  # forget package 'active sheet'
 
-die "oops" unless ! defined $Spreadsheet::Edit::OO::_inner_apply_sheet;
+die "oops" unless ! defined $Spreadsheet::Edit::_inner_apply_sheet;
 die "oops" unless ! defined $Spreadsheet::Edit::pkg2currsheet{$mypkg};
 die "oops" unless ! defined sheet();
 
