@@ -225,9 +225,9 @@ sub __mytraceback() {
   my $indent = "  ";
   my $s = "";
   for (my $lvl=1 ; ; ++$lvl) {
-    my ($pkg, $fname, $lno, $called_subr,$hasargs,$wantarray,$evaltext) = do{
-      {package DB; caller($lvl);}
-    };
+    my ($pkg, $fname, $lno, $called_subr,$hasargs,$wantarray,$evaltext) = 
+      do{ package 
+            DB; caller($lvl) };
     last if !defined($pkg);
     my @args = @DB::args;
     my $calling_subr = (caller($lvl+1))[3];
@@ -616,7 +616,8 @@ sub logmsg(@) {
 sub __locate_usercall(;$) {
   my $nskip = $_[0]//0;
   for (my $lvl=1 ; ; ++$lvl) {
-    my @frame = do{ package DB; caller($lvl) };
+    my @frame = do{ package 
+                      DB; caller($lvl) };
     oops unless defined($frame[0]);
     if ($frame[3] =~ /^\Q${mypkg}::\E([a-z][^:]*)/
          # && $1 ne "internal_utility_1" ...
