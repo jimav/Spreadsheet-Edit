@@ -309,9 +309,35 @@ sub check_colx(@) {
 
 ####### MAIN ######
 
+# Column variables named after (trimmed) titles or auto-aliases
+# "A title  ",Btitle,"  Multi-Word Title C",,H,F,Gtitle,Z,"0","003","999","-1"
+# A=0         B=1       C=2                  E F G=6    H  I   J     K     L
+our ($A_title, $Btitle, $Multi_Word_Title_C, $H, $F, $Gtitle, $Z, $_0, $_003, $_999, $_1);
+# And column letter codes (if they aren't titles)
+our ($A,$B,$C,$D,$E,   $G,   $I,$J,$K,$L);
+
 check_no_sheet;
+
+# Auto-tie all columns, current and future.  
+# Note that tie_column_vars has it's own separate comprehensive test
+tie_column_vars ':all';
+
 options silent => $silent, verbose => $verbose, debug => $debug;
 read_spreadsheet $inpath;
+
+# Verify that no-titles mode works
+$Spreadsheet::Edit::Verbose = 1; $Spreadsheet::Edit::Debub = 1;
+options(verbose => 1, debug => 1); 
+title_rx undef;
+die "title_rx with no titles returns defined value" if defined(title_rx());
+my $expected_rx = 0;
+apply { # should visit all rows
+  die dvis 'Wrong $rx' unless $rx == $expected_rx++;
+  if    ($rx == 0) { die dvis '$rx Wrong $A' unless $A =~ /^Pre-title-row/; }
+  elsif ($rx == 1) { die dvis '$rx Wrong $A' unless $A =~ /^A title/; }
+  elsif ($rx == 2) { die dvis '$rx Wrong $A' unless $A =~ /^Btitle/; }
+  elsif ($rx == 3) { die dvis '$rx Wrong $A' unless $A =~ /^  Multi-Word/; } 
+};
 
 # Auto-detect would skip the title row due to the empty title
 title_rx 1;
@@ -344,17 +370,6 @@ check_colx qw(Aalias_0 Aalia2_0 Dalias_D Ealias_E Falias_F
 # alias to title which is defined but no variable yet tied to it
 alias MWTCalia => qr/Multi.Word .*C/;
   
-# Column variables named after (trimmed) titles or auto-aliases
-# "A title  ",Btitle,"  Multi-Word Title C",,H,F,Gtitle,Z,"0","003","999","-1"
-# A=0         B=1       C=2                  E F G=6    H  I   J     K     L
-our ($A_title, $Btitle, $Multi_Word_Title_C, $H, $F, $Gtitle, $Z, $_0, $_003, $_999, $_1);
-# And column letter codes (if they aren't titles)
-our ($A,$B,$C,$D,$E,   $G,   $I,$J,$K,$L);
-
-# Auto-tie all columns, current and future.  
-# Note that tie_column_vars has it's own separate comprehensive test
-tie_column_vars ':all';
-
 
 apply_torx {
   die unless $A         eq "A2";
