@@ -228,12 +228,12 @@ sub __mytraceback() {
     my ($pkg, $fname, $lno, $called_subr,$hasargs,$wantarray,$evaltext) =
       do{ package
             DB; caller($lvl) };
-foreach (@INC) { say $_; }
-Carp::cluck("###_mytraceback");
-use Devel::Peek;
-print STDERR "XXX\n";
-map { Dump $_; my $a = $_; } @DB::args;
-print STDERR "YYY\n";
+#foreach (@INC) { say $_; }
+#Carp::cluck("###_mytraceback");
+#use Devel::Peek;
+#print STDERR "XXX\n";
+#map { Dump $_; my $a = $_; } @DB::args;
+#print STDERR "YYY\n";
 
     last if !defined($pkg);
     my @args = @DB::args;
