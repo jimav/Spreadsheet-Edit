@@ -15,6 +15,7 @@ package Other {
   our $Gtitle;
   $Gtitle = "Other::Gtitle before being tied";
 
+$Spreadsheet::Edit::Debug = 1;
   new_sheet
             data_source => "Othersheet",
             rows => [ [qw(OtitleA OtitleB OtitleC)],
@@ -166,7 +167,7 @@ sub getcell_byident($;$) { # access by imported $variable + all other ways
   my ($v, $err) = getcell_bykey($ident, $inerr);
   my $vstr = vis($v);
 
-  my $id_v = eval "\$$ident";   # undef if not defined, not in apply(), etc.
+  my $id_v = eval insert_loc_in_evalstr("\$$ident"); # undef if not defined, not in apply(), etc.
   my $id_vstr = vis($id_v);
   $err //= "\$$ident returned $id_vstr but other access methods returned $vstr"
     if $vstr ne $id_vstr;
@@ -323,30 +324,27 @@ check_no_sheet;
 tie_column_vars ':all';
 
 options silent => $silent, verbose => $verbose, debug => $debug;
-read_spreadsheet $inpath;
 
 # Verify that no-titles mode works
-$Spreadsheet::Edit::Verbose = 1; $Spreadsheet::Edit::Debub = 1;
-options(verbose => 1, debug => 1); 
-title_rx undef;
+read_spreadsheet {title_rx => undef}, $inpath;
+
 die "title_rx with no titles returns defined value" if defined(title_rx());
 my $expected_rx = 0;
 apply { # should visit all rows
   die dvis 'Wrong $rx' unless $rx == $expected_rx++;
   if    ($rx == 0) { die dvis '$rx Wrong $A' unless $A =~ /^Pre-title-row/; }
   elsif ($rx == 1) { die dvis '$rx Wrong $A' unless $A =~ /^A title/; }
-  elsif ($rx == 2) { die dvis '$rx Wrong $A' unless $A =~ /^Btitle/; }
-  elsif ($rx == 3) { die dvis '$rx Wrong $A' unless $A =~ /^  Multi-Word/; } 
+  elsif ($rx == 2) { die dvis '$rx Wrong $A' unless $A eq "A2"; }
+  elsif ($rx == 3) { die dvis '$rx Wrong $A' unless $A eq "A3" && $B eq "B3"; }
 };
+die dvis '$expected_rx' unless $expected_rx == 7;
 
-# Auto-detect would skip the title row due to the empty title
+# Can't auto-detect because it would skip the title row due to the empty title
 title_rx 1;
 
 { my $s=sheet(); dprint dvis('After reading $inpath\n   $$s->{rows}\n   $$s->{colx_desc}\n'); }
 
 
-# Now auto-detect is triggered by *any* alias to detect titles like "A" etc.
-# "A title  ",Btitle,"  Multi-Word Title C",,H,F,Gtitle,Z,"0","003","999","-1"
 alias Aalias => '^';
 alias Aalia2 => 0;
 alias Dalias => 'D';
@@ -370,7 +368,6 @@ check_colx qw(Aalias_0 Aalia2_0 Dalias_D Ealias_E Falias_F
 # alias to title which is defined but no variable yet tied to it
 alias MWTCalia => qr/Multi.Word .*C/;
   
-
 apply_torx {
   die unless $A         eq "A2";
   die unless $A_title   eq "A2";
@@ -532,7 +529,7 @@ foreach ([f => 0], [flt => 0, f => 1, flt => undef], [lt => $#rows],
     last_data_rx  $saved[1];
     title_rx      $saved[2];
   };
-  title_rx { enable => 0 };  # disable autodetect
+
   while (@pairs) {
     my ($key,$val) = @pairs[0,1]; @pairs = @pairs[2..$#pairs];
     if ($key =~ s/f//) {

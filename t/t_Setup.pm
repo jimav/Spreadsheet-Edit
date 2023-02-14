@@ -1,4 +1,5 @@
 use strict; use warnings  FATAL => 'all';
+use feature qw/say/;
 
 #
 # Parses standard options (--debug etc.) if present in @ARGV.
@@ -37,6 +38,10 @@ require Spreadsheet::Edit;
 $Spreadsheet::Edit::Verbose = $verbose;  # all remain undef by default
 $Spreadsheet::Edit::Silent  = $silent;
 $Spreadsheet::Edit::Debug   = $debug;
+
+say "t_Setup: Debug is on\n" if $debug;
+
+$Carp::Verbose = 1 if $debug;
 
 sub import {
   my $target = caller;
@@ -93,7 +98,7 @@ sub import {
 
   # Catch unintended warnings (that is, while in 'silent' mode)
   $SIG{__WARN__} = sub { 
-    Carp::confess("warning trapped; @_") if $silent; 
+    Carp::confess("warning while in <silent> mode") if $silent; 
     die "bug:$_[0]" if $_[0] =~ "uninitialized value";
     warn @_;
   };
