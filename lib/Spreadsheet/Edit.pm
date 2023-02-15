@@ -220,23 +220,28 @@ sub oops(@) { unshift @_, "oops - "; goto &Carp::confess; }
 
 my $mypkg = __PACKAGE__;
 
+sub CALLER_OVERRIDE_CHECK_OK() {
+  ! defined(&Carp::CALLER_OVERRIDE_CHECK_OK)
+  || &Carp::CALLER_OVERRIDE_CHECK_OK
+} 
 sub __mytraceback() {
   my $foldwidth = 80;
   my $indent = "  ";
   my $s = "";
   for (my $lvl=1 ; ; ++$lvl) {
+    # A Perl panic sometimes occurs because element(s) of @DB::args are
+    # freed, due to a refcounting bug somewhere.  It seems, at least for us,
+    # to be related to args-less calls like &__self ;  Avoiding referencing
+    # @DB::args if hasargs is not true seems to circumvent this.
+    # https://github.com/Perl/perl5/issues/11758#issuecomment-1430576569
+    # Carp has some work-arounds like pre-setting DB::args 
+    # to "a sentinel which no-one else has the address of" and using eval;
+    # there are some contentious bugreps about this; see comments in Carp.pm 
+    @DB::args = \$lvl if CALLER_OVERRIDE_CHECK_OK; # work-around from Carp
     my ($pkg, $fname, $lno, $called_subr,$hasargs,$wantarray,$evaltext) =
       do{ package
             DB; caller($lvl) };
-#foreach (@INC) { say $_; }
-#Carp::cluck("###_mytraceback");
-#use Devel::Peek;
-#print STDERR "XXX\n";
-#map { Dump $_; my $a = $_; } @DB::args;
-#print STDERR "YYY\n";
-
     last if !defined($pkg);
-    my @args = @DB::args;
     my $calling_subr = (caller($lvl+1))[3];
     ($fname //= "") =~ s#.*/##;
     $lno //= "";
@@ -251,7 +256,9 @@ sub __mytraceback() {
     elsif (! $hasargs) {
       $line1 .= '&'.$called_subr;
     } else {
-      $line1 .= $called_subr.avis(@args);
+      my @args = eval { @DB::args };
+      $line1 .= $called_subr.($@ ? "(sorry: perl bug prevents arg retrieval)"
+                                 : avis(@args));
     }
 
     my $line2 = " called".($calling_subr ? " from $calling_subr" : "")
@@ -505,9 +512,8 @@ sub new_sheet(@) {
   my $userpkg = delete $opts{package} // $frame->[0];
 
   unless ($opts{data_source}) {
-    # N.B. This ignores {cmd_nesting}
-    my ($fn, $lno, $subname) = @$frame[1,2,3];
-    $opts{data_source} = "created at ${fn}:$lno by $subname";
+    my (undef, $fn, $lno, $subname) = @{ __filter_frame($frame) };
+    $opts{data_source} = "Created at ${fn}:$lno by $subname";
   }
 
   #??? allow this to log, or log ourself and suppress logging in ...::new ?
@@ -619,38 +625,41 @@ sub logmsg(@) {
 sub __usercall_info(;$) {
   my $nskip = $_[0]//0;
   for (my $lvl=1 ; ; ++$lvl) {
+    @DB::args = \$lvl if CALLER_OVERRIDE_CHECK_OK; # see mytraceback()
     my @frame = do{ package
                       DB; caller($lvl) };
     oops dvis('$lvl $nskip @frame')  unless defined($frame[0]);
     if ($frame[3] =~ /^\Q${mypkg}::\E([a-z][^:]*)/
          # && $1 ne "internal_utility_1" ...
          # && $1 ne "internal_utility_2" ...
-         ###&& $1 ne "crow" ###TEMP DEBUG
        ) {
-      #next if $nskip--;
-      say(dvis '## Skipping frame; $lvl $nskip @frame'), next if $nskip--;
+      #say(dvis '## Skipping frame; $lvl $nskip @frame') if $nskip;
+      next if $nskip--;
       return \@frame unless wantarray;
-      my @args = @DB::args;
+      my @args = eval { @DB::args }; @args=() if $@;
       return (\@frame, \@args)
     }
   }
 }
 
-sub __fn_ln_calledmeth(;$) { #cleaned-up/abbreviated for display purposes
-  my ($nskip) = @_;
-  my ($fn, $lno, $subname) = @{ __usercall_info($nskip) }[1,2,3];
-  $fn = basename($fn);
-  $subname =~ s/.*:://;
-  ($fn, $lno, $subname)
-}
-sub __calledmeth_desc(;$) {
-  my $nskip = shift;
-  my ($fn, $lno, $subname) = __fn_ln_calledmeth($nskip);
-  (">" x (($nskip//0)+1))."[$fn:$lno] $subname";
+sub __filter_frame($) { #clean-up/abbreviate for display purposes
+  my @frame = @{shift @_};
+  $frame[1] = basename $frame[1]; # filename
+  $frame[3] =~ s/.*:://;          # subname
+  \@frame
 }
 
-sub __calledmeth(;$) {  # ($nskip)
-  (__fn_ln_calledmeth(@_))[2]
+sub __fn_ln_methname(;$) { #cleaned-up/abbreviated for display purposes
+  my ($nskip) = @_;
+  @{ __filter_frame(__usercall_info($nskip)) }[1,2,3]; # (fn, lno, subname)
+}
+sub __methname_desc(;$) {
+  my $nskip = shift;
+  my ($fn, $lno, $subname) = __fn_ln_methname($nskip);
+  (">" x (($nskip//0)+1))."[$fn:$lno] $subname";
+}
+sub __methname(;$) {  # ($nskip)
+  (&__fn_ln_methname(@_))[2]
 }
 
 sub __userpkg(;$) {
@@ -671,15 +680,13 @@ sub __userpkg(;$) {
 
 sub __self_ifexists {
 
-###TEMP
-{ my $s = "### \$Debug=".u($Debug);
-  if (defined(blessed($_[0])) && $_[0]->isa(__PACKAGE__)) {
-    $s .= " obj->{debug}=".u(${$_[0]}->{debug});
-  }
-print STDERR "##AA1\n";
-  say $s,"\n",__mytraceback();
-print STDERR "##AA2\n";
-}
+####TEMP
+#{ my $s = "### \$Debug=".u($Debug);
+#  if (defined(blessed($_[0])) && $_[0]->isa(__PACKAGE__)) {
+#    $s .= " obj->{debug}=".u(${$_[0]}->{debug});
+#  }
+#  say $s,"\n",__mytraceback();
+#}
 
   # If the first arg is an object ref, shift it off and return it;
   # Otherwise, if the caller's "current sheet" exists, return that;
@@ -690,14 +697,14 @@ print STDERR "##AA2\n";
 
 #  my $selfarg = (defined(blessed($_[0])) && $_[0]->isa(__PACKAGE__) && shift(@_));
 #  if ($selfarg) {
-#    say "### Explicit self $selfarg for ",__calledmeth_desc();
+#    say "### Explicit self $selfarg for ",__methname_desc();
 #    return $selfarg;
 #  } else {
 #    my $cs = $pkg2currsheet{__userpkg()};
 #    if ($cs) {
-#      say "### Implied cs=",u($cs)," for ",__calledmeth_desc();
+#      say "### Implied cs=",u($cs)," for ",__methname_desc();
 #    } else {
-#      say "### NO cs for ",__calledmeth_desc();
+#      say "### NO cs for ",__methname_desc();
 #    }
 #    return $cs
 #  }
@@ -706,7 +713,7 @@ sub __selfmust { # sheet must exist, otherwise throw
 oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   &__self_ifexists || do{
     my $pkg = caller(1);
-    croak __calledmeth()," : No sheet is defined in $pkg\n"
+    croak __methname()," : No sheet is defined in $pkg\n"
   };
 }
 sub __self { # a new empty sheet is created if necessary
@@ -718,10 +725,10 @@ oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
 
     # If the function which triggered this happens to start with an {OPTHASH},
     # pick up any verbose & debug options from it.  Otherwise the fallback
-    # globals will be used.  NOTE: This means that e.g. read_spreasheet(silent=>1, ...)
-    # will affect *all* ops on the implicitly-created sheet, whereas if a sheet
-    # already existed any verbose/debug/silent options would only affect the
-    # read_spreadsheet() call.
+    # globals will be used.  NOTE: This means that e.g. 
+    # read_spreasheet(silent=>1, ...) will affect *all* ops on the 
+    # implicitly-created sheet, whereas if a sheet already existed then a
+    # silent option would only affect the read_spreadsheet() call.
 
     if (ref(my $hash = $args->[0]) eq "HASH") {
       foreach my $key (qw/verbose debug silent/) {
@@ -730,10 +737,16 @@ oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
       confess "Unexpected cmd_nesting" if $hash->{cmd_nesting};
     }
     #??? temporarily suppress verbose to avoid logging this 'new'?
-    my ($userpkg, $fn, $lno, $subname) = @$frame;
+    my ($userpkg, $fn, $lno, $subname) = @{ __filter_frame($frame) };
     $opts{data_source} = "(Created implicitly by $subname at ${fn}:$lno)";
     
-    $pkg2currsheet{$userpkg} = Spreadsheet::Edit->new(\%opts);
+    $opts{cmd_nesting}++; warn "FIXME";
+    $opts{verbose}++; warn "FIXME";
+    my $self = $pkg2currsheet{$userpkg} = Spreadsheet::Edit->new(\%opts);
+    $self->{cmd_nesting}--;
+    $opts{verbose}--; warn "FIXME";
+    warn "__self returning $self\n";
+    $self
   }
 }
 
@@ -756,13 +769,13 @@ oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
 sub __selfonly {
 oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   my $self = &__self;
-  confess __calledmeth, " expects no arguments!\n" if @_;
+  confess __methname, " expects no arguments!\n" if @_;
   $self
 }
 sub __selfmustonly {
 oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   my $self = &__selfmust;
-  confess __calledmeth, " expects no arguments!\n" if @_;
+  confess __methname, " expects no arguments!\n" if @_;
   $self
 }
 
@@ -771,7 +784,7 @@ oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   my $Nargs = shift;
   my ($self, $opthash) = &__self_opthash;
   #croak
-  croak __calledmeth, " expects $Nargs arguments, not ",scalar(@_),"\n"
+  croak __methname, " expects $Nargs arguments, not ",scalar(@_),"\n"
     if $Nargs != @_;
   ($self, $opthash, @_)
 }
@@ -851,14 +864,14 @@ sub __validate_nonnegi_or_undef($;$) {
 
 sub __validate_pairs(@) {
   unless ((scalar(@_) % 2) == 0) {
-    croak __calledmeth," does not accept an {OPTIONS} hash here"
+    croak __methname," does not accept an {OPTIONS} hash here"
       if (ref($_[0]) eq "HASH");
-    confess "In call to ",__calledmeth,
+    confess "In call to ",__methname,
           " : uneven arg count, expecting key => value pairs"
   }
   foreach (pairs @_) {
     my $key = $_->[0];
-    confess "In call to ",__calledmeth," the key '$key' looks suspicious"
+    confess "In call to ",__methname," the key '$key' looks suspicious"
       unless $key =~ /^\w+$/;
   }
   @_
@@ -866,10 +879,10 @@ sub __validate_pairs(@) {
 
 sub _check_rx {
   my ($self, $rx, $one_past_end_ok) = @_;
-  confess __calledmeth.": Illegal rx ",vis($rx),"\n"
+  confess __methname.": Illegal rx ",vis($rx),"\n"
     unless ($rx//"") =~ /^\d+$/;  # non-negative integer
   my $maxrx = $#{$$self->{rows}};
-  confess __calledmeth.": rx ".vis($rx)." is beyond the last row\n"
+  confess __methname.": rx ".vis($rx)." is beyond the last row\n"
                     .dvis(' $$self')
     if $rx > ($one_past_end_ok ? ($maxrx+1) : $maxrx);
 }
@@ -879,12 +892,12 @@ sub __first_ifnot_wantarray(@) {
   my $wantarray = (caller(1))[5];
   return @_ if $wantarray;
   return $_[0] if @_;
-  croak __calledmeth, " called in scalar context but that method does not return a result.\n"
+  croak __methname, " called in scalar context but that method does not return a result.\n"
     if defined($wantarray);
 }
 sub __validate_not_scalar_context(@) {
   my $wantarray = (caller(1))[5];
-  croak __calledmeth, " returns an array, not a scalar"
+  croak __methname, " returns an array, not a scalar"
     unless $wantarray || !defined($wantarray);
   @_
 }
@@ -903,6 +916,7 @@ sub _carponce { # if not silent
 # Unlike other methods, new() takes key => value pair arguments.
 # For consistency with other methods an initial {OPTIONS} hash is
 # also allowed, but it is not special and is merged with any linear args.
+
 sub new { # Strictly OO, this does not affect caller's "current sheet".
           # The corresponding functional API is new_sheet() which explicitly
           # creates a new sheet and makes it the 'current sheet'.
@@ -1319,7 +1333,6 @@ sub set($$$) {
 sub _log {
   my $self = shift;
   state $in_midst;
-Carp::cluck "###_log\n";
   print STDERR join "",
                     ($in_midst ? "" : (">" x ($$self->{cmd_nesting}||1))),
                     map{u} @_;
@@ -1382,35 +1395,8 @@ sub fmt_sheet($) {
   my $s = $sheet->sheetname() || $sheet->data_source();
   #if (length($s) > $trunclen) { $s = "...".substr($s,-($trunclen-3)) }
   if (length($s) > $trunclen) { $s = substr($s,($trunclen-3))."..." }
-  sprintf("0x%x(%s)", refaddr($sheet), $s//"");
+  sprintf("0x%x (%s)", refaddr($sheet), $s//"");
 }
-
-### $obj->_logmethmsg(ITEMS...)
-###
-### Returns a message string for logging the current function or method call:
-###
-###   ">... [callers_file:callers_lno] calledsubname ITEMS\n"
-###
-### with ITEMS formatted by fmt_list.  NOTE: Unconditionally appends \n
-###
-##sub _logmethmsg {
-##  my ($maybefake_self, @items) = @_;
-##
-##  my ($fn, $lno, $subname) = __fn_ln_calledmeth($maybefake_self->{cmd_nesting});
-##  my $prefix = (">" x (($$maybefake_self->{cmd_nesting}//0)+1))
-##              ."[$fn:$lno] $subname ";
-##
-###  # Omit the first item if it looks like an empty {OPTIONS} hashref
-###  # REALLY??
-###  shift @items
-###    if @items && ref($items[0]) eq "HASH" && ! %{ $items[0] };
-##
-##  my $msg = fmt_list(\$prefix, @items);
-##  oops "terminal newline in final log arg" if $msg =~ /\n"?\z/s;
-##
-##  $msg."\n"
-##}
-##sub __logmethmsg(@) { _logmethmsg(\{}, @_) }
 
 # __logmethmsg($cmd_nesting or undef, ITEMS...)
 #
@@ -1418,21 +1404,13 @@ sub fmt_sheet($) {
 #
 #   ">... [callers_file:callers_lno] calledsubname ITEMS\n"
 #
-# with ITEMS formatted by fmt_list.  NOTE: Unconditionally appends \n
+# with ITEMS formatted by fmt_list, with \n unconditionally appended.
 #
 sub __logmethmsg($@) {
   my ($nskip, @items) = @_;
-
-  my $prefix = __calledmeth_desc($nskip)." ";
-
-#  # Omit the first item if it looks like an empty {OPTIONS} hashref
-#  # REALLY??
-#  shift @items
-#    if @items && ref($items[0]) eq "HASH" && ! %{ $items[0] };
-
+  my $prefix = __methname_desc($nskip)." ";
   my $msg = fmt_list(\$prefix, @items);
   oops "terminal newline in final log arg" if $msg =~ /\n"?\z/s;
-
   $msg."\n"
 }
 sub __logmeth($;@) { # ($nskip, @msgitems...)
@@ -1805,7 +1783,7 @@ sub alias(@) {
 
 sub unalias(@) {
   my $self = &__selfmust;
-  croak __calledmeth, " does not accept an {OPTIONS} hash\n"
+  croak __methname, " does not accept an {OPTIONS} hash\n"
     if ref($_[0]) eq 'HASH';
 
   my ($colx, $colx_desc, $useraliases)
@@ -1858,7 +1836,7 @@ sub title_rx(;$@) {
     croak '{OPTARGS} passed to title_rx with no operator (get request?)'
       if %$opthash;
     $rx = $$self->{title_rx};
-    $self->_logmethifv(\"RETURNING", $rx);
+    $self->_logmethifv(\"RETURNING ", $rx);
   } else {
     # N.B. undef arg means there are no titles
     $rx = shift;
@@ -2633,7 +2611,7 @@ sub read_spreadsheet($;@) {
   } 
 
   $self->_logmethifv($opthash, $inpath,
-                     \" (title_rx set to ",vis($$self->{title_rx}),\")");
+                     \" [title_rx set to ",vis($$self->{title_rx}),\"]");
 
   $self->_restore_stdopts($saved_stdopts);
 }#read_spreadsheet
@@ -2879,9 +2857,10 @@ sub _refval_tiehelper { # access a sheet variable which is a ref of some kind
 #
 # Always returns the previous sheet (or undef)
 sub sheet(;$$) {
-  my $opthash = &__opthash;  # shifts iff {OPTIONS} or supplies {}
+  my $has_opthash = ref($_[0]) eq "HASH" && shift(@_);
+  my $opthash = $has_opthash || {};
   my $pkg = $opthash->{package} // caller();
-  my $pkgmsg = $opthash->{package} ? " (pkg $pkg)" : "";
+  my $pkgmsg = $opthash->{package} ? " [for pkg $pkg]" : "";
   my $curr = $pkg2currsheet{$pkg};
   if (@_) {
     #__validate_sheet_arg(my $new = shift);
@@ -2893,14 +2872,16 @@ sub sheet(;$$) {
     #local ${$curr//\{}}->{verbose} ||= (
              #($new ? $new->{verbose} : 0) || $opthash->{verbose} );
 
-    __logfuncifv(0,\fmt_sheet($new),
+    __logfuncifv(0,($has_opthash ? $opthash : ()), 
+             \fmt_sheet($new),
              \(u($curr) eq u($new)
              ? " [no change]" : " [previous: ".fmt_sheet($curr)."]"),
              \$pkgmsg);
 
     $pkg2currsheet{$pkg} = $new;
   } else {
-    __logfuncifv(0,$opthash,\(": ".fmt_sheet($curr)), \$pkgmsg);
+    __logfuncifv(0,\"(",($has_opthash ? $opthash : ()),\")",
+                   \(" -> ".fmt_sheet($curr)), \$pkgmsg);
   }
   $curr
 }
@@ -3232,7 +3213,8 @@ named the same).
 =back
 
 Columns may be referenced by title without knowing their absolute positions.
-Optionally global variables may be tied to columns.  Tabular data can come
+Optionally global (package) variables may be tied to columns.  
+Tabular data can come
 from Spreadsheets, CSV files, or your code, and be written similarly.
 Both Functional and Object-Oriented (OO) APIs are provided.
 
@@ -3358,8 +3340,6 @@ These disable auto-detection and explicitly specify the title row
 index, or with C<undef>, that there are no titles.
 See also the C<title_rx> function/method.
 
-=back
-
 Other options:
 
 =over 6
@@ -3389,64 +3369,6 @@ Due to bugs in Libre/Open Office, spreadsheet files can not
 be read if LO/OO is currently running, even
 for unrelated purposes (see "BUGS").
 This problem does not occur with .csv files
-
-=head2 $href = read_workbook SPREADSHEETPATH
-
-**NOT YET IMPLEMENTED**
-
-[Function only, not callable as a method]
-All sheets in the specified document are read into memory
-without changing the 'current sheet'.  A hashref is returned:
-
-  {
-    "sheet name" => (Spreadsheet::Edit object),
-    ...for each sheet in the workbook...
-  }
-
-To access one of the workbook sheets, execute
-
-  sheet $href->{"sheet name"};  # or call OO methods on it
-
-If SPREADSHEETPATH was a .csv file then the resulting hash will have only
-one member with an indeterminate key.
-
-=head2 new_sheet
-
-[functional API only]
-Create a new empty sheet and make it the 'current sheet', returning the
-sheet object.
-
-Rarely used because a new sheet is automatically created by
-C<read_spreadsheet> if your package has no current sheet.
-
-{OPTIONS} may include:
-
-=over 6
-
-=item data_source => "text..."
-
-This string will be returned by the C<data_source> method,
-overriding any default.
-
-=item rows => [[A1_value,B1_value,...], [A2_value,B2_value,...], ...],
-
-=item linenums => [...]  #optional
-
-This makes the C<sheet> object hold data already in memory.
-The data should not be modified directly while the sheet C<object> exists.
-
-=item clone => $existing_sheet
-
-A deep copy of an existing sheet is made.
-
-=item num_cols => $number  # with no initial content
-
-An empty sheet is created but with a fixed number of columns.
-When rows are later created they will be immediately padded with empty cells
-if necessary to this width.
-
-=back
-
 
 =head2 alias IDENT => COLSPEC, ... ;
 
@@ -3479,13 +3401,6 @@ RETURNS: The 0-based column indices of the aliased column(s).
 =head2 unalias IDENT, ... ;
 
 Forget alias(es).  Any masked COLSPECs become usable again.
-
-=head2 spectocx COLSPEC or qr/regexp/, ... ;
-
-Returns the 0-based indicies of the specified colomn(s).
-Throws an exception if there is no such column.
-A regexp may match multiple columns.
-See also C<%colx>.
 
 =head2 tie_column_vars VARNAME, ...
 
@@ -3641,7 +3556,7 @@ rows inserted after the currently-being-visited row will be visited
 at the proper time.
 
 An 'apply' sub may change the 'current sheet', after which
-global variables will refer to the other sheet and
+tied column variables will refer to the other sheet and
 any C<apply> active for that sheet.  It should take care to restore
 the original sheet before returning
 (perhaps using Guard::scope_guard).
@@ -3662,7 +3577,6 @@ indexed by alias, title, letter code, etc. (any COLSPEC).
 
 C<$linenum> is the starting line number of the current row if the
 data came from a .csv file.
-
 
 For example, the "Account Number" column in the SYNOPSIS may be accessed
 many ways:
@@ -3823,32 +3737,67 @@ Invert the relation, i.e. rotate and flip the table.
 Cells A1,B1,C1 etc. become A1,A2,A3 etc.
 Any title_rx is forgotten.
 
-=head2 logmsg [FOCUSARG,] string, string, ...
+=head2 $href = read_workbook SPREADSHEETPATH
 
-(must be explicitly imported)
+**NOT YET IMPLEMENTED**
 
-Concatenate strings, prefixed by a description
-of the 'current sheet' and row during C<apply>, if any (or with the
-sheet and/or row given by FOCUSARG).
+[Function only, not callable as a method]
+All sheets in the specified document are read into memory
+without changing the 'current sheet'.  A hashref is returned:
 
-The resulting string is returned, with "\n" appended if it was not
-already terminated by a newline.
+  {
+    "sheet name" => (Spreadsheet::Edit object),
+    ...for each sheet in the workbook...
+  }
 
-The first argument is used as FOCUSARG if it is
-a sheet object, [sheet_object], or [sheet_object, rowindex], and specifies
-the sheet and/or row to describe in the message prefix.
-Otherwise the first argument is not special and is simply
-the first message string.
+To access one of the workbook sheets, execute
 
-The details of formatting the sheet may be customized with a call-back
-given by a {logmsg_pfx_gen} attribute.  See comments
-in the source for how this works.
+  sheet $href->{"sheet name"};  # or call OO methods on it
 
-=head2 write_csv CSVFILEPATH
+If SPREADSHEETPATH was a .csv file then the resulting hash will have only
+one member with an indeterminate key.
+
+=head2 new_sheet
+
+[functional API only]
+Create a new empty sheet and make it the 'current sheet', returning the
+sheet object.
+
+Rarely used because a new sheet is automatically created by
+C<read_spreadsheet> if your package has no current sheet.
+
+{OPTIONS} may include:
+
+=over 6
+
+=item data_source => "text..."
+
+This string will be returned by the C<data_source> method,
+overriding any default.
+
+=item rows => [[A1_value,B1_value,...], [A2_value,B2_value,...], ...],
+
+=item linenums => [...]  #optional
+
+This makes the C<sheet> object hold data already in memory.
+The data should not be modified directly while the sheet C<object> exists.
+
+=item clone => $existing_sheet
+
+A deep copy of an existing sheet is made.
+
+=item num_cols => $number  # with no initial content
+
+An empty sheet is created but with a fixed number of columns.
+When rows are later created they will be immediately padded with empty cells
+if necessary to this width.
+
+=back
+
 
 =head2 write_csv *FILEHANDLE
 
-=head2 write_csv $filehandle
+=head2 write_csv $path
 
 Write the current data to the indicated path or open file handle as
 a CSV text file.
@@ -3904,7 +3853,7 @@ documentation|https://wiki.openoffice.org/wiki/Documentation/DevGuide/Spreadshee
 
 =head2 options NAME ;
 
-Set or retrieve miscellaneous sheet-global options.
+Set or retrieve miscellaneous sheet-specific options.
 When setting, the previous value of
 the last option specified is returned.  The only options currently defined
 are I<silent>, I<verbose> and I<debug>.
@@ -3913,6 +3862,34 @@ are I<silent>, I<verbose> and I<debug>.
 
 Returns a reference to a hash in which you may store arbitrary data
 associated with the sheet object.
+
+=head2 spectocx COLSPEC or qr/regexp/, ... ;
+
+Returns the 0-based indicies of the specified colomn(s).
+Throws an exception if there is no such column.
+A regexp may match multiple columns.
+See also C<%colx>.
+
+=head2 logmsg [FOCUSARG,] string, string, ...
+
+(must be explicitly imported)
+
+Concatenate strings, prefixed by a description
+of the 'current sheet' and row during C<apply>, if any (or with the
+sheet and/or row given by FOCUSARG).
+
+The resulting string is returned, with "\n" appended if it was not
+already terminated by a newline.
+
+The first argument is used as FOCUSARG if it is
+a sheet object, [sheet_object], or [sheet_object, rowindex], and specifies
+the sheet and/or row to describe in the message prefix.
+Otherwise the first argument is not special and is simply
+the first message string.
+
+The details of formatting the sheet may be customized with a call-back
+given by a {logmsg_pfx_gen} attribute.  See comments
+in the source for how this works.
 
 =head1 STANDARD SHEET VARIABLES
 
