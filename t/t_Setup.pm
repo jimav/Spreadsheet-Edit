@@ -16,6 +16,9 @@ use feature qw/say/;
 package t_Setup;
 
 use parent "Exporter::Tiny";
+
+our @EXPORT = qw($debug $verbose $silent);
+
 require v5.9.5; # for mro
 use mro; # enables next::method
 
@@ -40,8 +43,6 @@ $Spreadsheet::Edit::Silent  = $silent;
 $Spreadsheet::Edit::Debug   = $debug;
 
 say "t_Setup: Debug is on\n" if $debug;
-
-$Carp::Verbose = 1 if $debug;
 
 sub import {
   my $target = caller;
@@ -108,7 +109,5 @@ sub import {
   my $this = $_[0];
   goto &{ $this->next::can }; # see 'perldoc mro'  goto __SUPER__
 }
-
-our @EXPORT = qw($debug $verbose $silent);
 
 1;

@@ -40,7 +40,7 @@ sub verif_no_internals_mentioned($) {
   s/(?<!\w)\w[\w:\$]*=(?:REF|ARRAY|HASH|SCALAR|CODE|GLOB)\(0x[0-9a-f]+\)//g;
   
   # Ignore references to our test library packages, e.g. /path/to/t/t_Utils.pm
-  s#\bt_Utils.pm(\W|$)#<ELIDED>$1#gs;
+  s#\b(t_Utils).pm(\W|$)#<$1 .pm>$2#gs;
   
   my $msg;
   if (/\b(?<hit>Spreadsheet::[\w:]*)/) {

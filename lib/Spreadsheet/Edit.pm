@@ -194,6 +194,7 @@ sub _generateHash_crow {  # %crow indexes cells in the current row during apply
 #
 ########################### End of Exporting stuff ##########################
 
+#use Data::Dumper::Interp 5.000;
 use Data::Dumper::Interp;
 
 use Carp;
@@ -208,6 +209,7 @@ use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename dirname fileparse);
 use Symbol qw(gensym);
 use POSIX qw(INT_MAX);
+use Guard qw(scope_guard);
 
 require Tie::Indirect; # OUR CUSTOM STUFF: stop using it?
 
@@ -220,10 +222,10 @@ sub oops(@) { unshift @_, "oops - "; goto &Carp::confess; }
 
 my $mypkg = __PACKAGE__;
 
-sub CALLER_OVERRIDE_CHECK_OK() {
-  ! defined(&Carp::CALLER_OVERRIDE_CHECK_OK)
-  || &Carp::CALLER_OVERRIDE_CHECK_OK
-} 
+use constant _CALLER_OVERRIDE_CHECK_OK =>
+     (! defined(&Carp::CALLER_OVERRIDE_CHECK_OK) 
+      || &Carp::CALLER_OVERRIDE_CHECK_OK);
+
 sub __mytraceback() {
   my $foldwidth = 80;
   my $indent = "  ";
@@ -237,7 +239,7 @@ sub __mytraceback() {
     # Carp has some work-arounds like pre-setting DB::args 
     # to "a sentinel which no-one else has the address of" and using eval;
     # there are some contentious bugreps about this; see comments in Carp.pm 
-    @DB::args = \$lvl if CALLER_OVERRIDE_CHECK_OK; # work-around from Carp
+    @DB::args = \$lvl if _CALLER_OVERRIDE_CHECK_OK; # work-around from Carp
     my ($pkg, $fname, $lno, $called_subr,$hasargs,$wantarray,$evaltext) =
       do{ package
             DB; caller($lvl) };
@@ -321,11 +323,50 @@ sub title2ident($) {
   $_
 }
 
+# Get a Data::Dumper::Interp object configured to not show objects.
+sub __DDInew() {
+  my ($href) = @_;
+  # Data::Dumper::Interp v5.000 has the Objects feature which never
+  # shows object internals, but earlier versions had an Overloads feature
+  # which only used operators overloaded by an object; in the latter case 
+  # limit depth
+  # (VERSION is undef in my development version)
+  if ( ($Data::Dumper::Interp::VERSION//5.000) >= 5.000 ) {
+    visnew()->Foldwidth(40)->Objects(1)
+  } else {
+    visnew()->Foldwidth(40)->Overloads(1)->Maxdepth(1)
+  }
+}
+
 # Format list as "word,word,..." without parens ;  Non-barewords are "quoted".
 sub __fmt_uqlist(@) { join(",",map{quotekey} @_) }
-
-# Format array as "(word, word,...)" with parens
 sub __fmt_uqarray(@) { "(" . &__fmt_uqlist . ")" }
+
+# Format list as without parens with barewords in qw/.../
+sub __fmt_uqlistwithqw(@) {
+  my $barewords;
+  my $s = "";
+  foreach (map{quotekey} @_) {
+    if (/^\w/) {
+      if ($barewords++) {
+        $s .= " ";
+      } else {
+        $s .= ", " if $s;
+        $s .= "qw/";
+      }
+    } else {
+      if ($barewords) {
+        $s .= "/";
+        $barewords = 0;
+      }
+      $s .= ", " if $s;
+    }
+    $s .= $_;
+  }
+  $s .= "/" if $barewords;
+  $s
+} 
+sub __fmt_uqarraywithqw(@) { "(" . &__fmt_uqlistwithqw . ")" }
 
 # Format list of pairs as "key1 => val1, key2 => val2, ..."  without parens
 sub __fmt_pairlist(@) {
@@ -462,7 +503,6 @@ sub _fmt_colx(;$$) {
 # Is a title omitted from colx?
 sub __unindexed_title($$) {
   my ($title, $num_cols) = @_;
-oops unless defined($title) && defined($num_cols); ###TEMP DEBUG
   $title eq ""
   || $title eq '^'
   || $title eq '$'
@@ -494,33 +534,24 @@ sub _get_indexed_titles {
 # N.B. the corresponding OO interface is Spreadsheet::Edit->new(...)
 #
 sub new_sheet(@) {
-  my $opthash = &__opthash; # shift off 1st arg iff it is a hashref
+  my $opthash = &__opthash;
+  my %opts = (%$opthash, %{to_hash(@_)}); # new() merges these anyway
 
-  # Create a new Functional-API "current sheet" for the user (or specified package)
-  # as a result of either an explicit new_sheet() call or implicitly when something 
-  # else is called when no current sheet exists.
-  
-  my $new_args = to_hash(@_);
-  my %opts;
-  foreach my $key (qw/verbose debug silent data_source package cmd_nesting/) {
-    $opts{$key} = $opthash->{$key}   if exists($opthash->{key});
-    $opts{$key} = $new_args->{$key}  if exists($new_args->{key});
-  }
-  # Inbound {cmd_nesting} may not work (TODO: TEST IT)
-  my ($frame, $args) = __usercall_info($opts{cmd_nesting});
+  my ($userpkg, $fn, $lno, $subname) = @{ __filter_frame(__usercall_info()) };
 
-  my $userpkg = delete $opts{package} // $frame->[0];
+  $userpkg = delete $opts{package} if exists $opts{package};
+  croak "Invalid 'package' ",u($userpkg),"\n"
+    unless defined($userpkg) && $userpkg =~ /^[a-zA-Z][:\w]*$/a;
 
-  unless ($opts{data_source}) {
-    my (undef, $fn, $lno, $subname) = @{ __filter_frame($frame) };
-    $opts{data_source} = "Created at ${fn}:$lno by $subname";
+  $opts{data_source} ||= "Created at ${fn}:$lno by $subname";
+
+  my $sheet = __silent_new(\%opts);
+
+  if ($$sheet->{verbose}) {
+    __logmethret([$opthash,@_], $sheet);
   }
 
-  #??? allow this to log, or log ourself and suppress logging in ...::new ?
-  
-  my $sheet = Spreadsheet::Edit->new(\%opts, @_);
-
-  $pkg2currsheet{$userpkg} = $sheet;
+  $pkg2currsheet{$userpkg} = $sheet
 }
 
 # logmsg() - Concatenate strings to form a "log message", possibly
@@ -607,12 +638,10 @@ sub logmsg(@) {
 }
 
 #####################################################################
-# Locate the user's call to us in the call stack.
+# Locate the nearest call to a public method/function in the call stack.
+#
 # Basically we search for a call to any of our subs with a name not starting
 # with underscore, excluding a few public utilities we might call internally.
-#
-# However skip the specified number of inner-most user calls
-# (used by the {cmd_nesting} mechanism)
 #
 # RETURNS
 #   ([frame], [called args]) in array context
@@ -622,21 +651,23 @@ sub logmsg(@) {
 #   0       1        2       3
 #   package filename linenum subname ...
 #
-sub __usercall_info(;$) {
-  my $nskip = $_[0]//0;
+sub __usercall_info() {
   for (my $lvl=1 ; ; ++$lvl) {
-    @DB::args = \$lvl if CALLER_OVERRIDE_CHECK_OK; # see mytraceback()
+    @DB::args = \$lvl if _CALLER_OVERRIDE_CHECK_OK; # see mytraceback()
     my @frame = do{ package
                       DB; caller($lvl) };
-    oops dvis('$lvl $nskip @frame')  unless defined($frame[0]);
+    oops dvis('$lvl @frame') unless defined($frame[0]);
     if ($frame[3] =~ /^\Q${mypkg}::\E([a-z][^:]*)/
          # && $1 ne "internal_utility_1" ...
          # && $1 ne "internal_utility_2" ...
        ) {
-      #say(dvis '## Skipping frame; $lvl $nskip @frame') if $nskip;
-      next if $nskip--;
       return \@frame unless wantarray;
-      my @args = eval { @DB::args }; @args=() if $@;
+      my @args;
+      my $hasargs = $frame[4];
+      if ($hasargs) {
+        eval{ @args = @DB::args }; 
+        @args=() if $@; # perl bug?
+      }
       return (\@frame, \@args)
     }
   }
@@ -648,23 +679,49 @@ sub __filter_frame($) { #clean-up/abbreviate for display purposes
   $frame[3] =~ s/.*:://;          # subname
   \@frame
 }
-
-sub __fn_ln_methname(;$) { #cleaned-up/abbreviated for display purposes
-  my ($nskip) = @_;
-  @{ __filter_frame(__usercall_info($nskip)) }[1,2,3]; # (fn, lno, subname)
-}
-sub __methname_desc(;$) {
-  my $nskip = shift;
-  my ($fn, $lno, $subname) = __fn_ln_methname($nskip);
-  (">" x (($nskip//0)+1))."[$fn:$lno] $subname";
-}
-sub __methname(;$) {  # ($nskip)
-  (&__fn_ln_methname(@_))[2]
+sub __fn_ln_methname() {
+  @{ __filter_frame(__usercall_info()) }[1,2,3]; # (fn, lno, subname)
 }
 
-sub __userpkg(;$) {
-  my ($nskip) = @_;
-  @{ __usercall_info($nskip) }[0];
+sub __methname() {
+  (&__fn_ln_methname())[2]
+}
+
+sub __find_userpkg() {
+  ${ __usercall_info() }[0];
+}
+
+# This always returns the caller's caller's package but also 
+# checks that it is not an internal call, which should never happen
+sub __callerpkg() {
+  my $pkg = (caller(1))[0];
+  oops if $pkg =~ /^$mypkg/;
+  $pkg
+}
+
+# Create a new object without allowing any logging.  This is used when
+# new() is called implicitly by something else and new's log messages
+# might display an internal filename (namely Edit.pm).
+#
+# debug/verbose args are removed from the arguments passed to new()
+# and put back into the object after it is created.
+sub __silent_new(@) {
+  my $opthash = &__opthash; 
+  my $new_args = to_hash(@_);
+
+  my %saved;
+  foreach my $key (qw/verbose debug/) {
+    $saved{$key} = $opthash->{$key} if exists($opthash->{$key});
+    $opthash->{$key} = 0; # force off
+    $saved{$key} = delete($new_args->{$key}) if exists($new_args->{$key});
+  } 
+
+  my $self = Spreadsheet::Edit->new($opthash, %$new_args);
+
+  delete @$$self{qw/verbose debug/};
+  $self->_set_verbose_debug_silent(%saved);
+
+  $self
 }
 
 #####################################################################
@@ -680,72 +737,30 @@ sub __userpkg(;$) {
 
 sub __self_ifexists {
 
-####TEMP
-#{ my $s = "### \$Debug=".u($Debug);
-#  if (defined(blessed($_[0])) && $_[0]->isa(__PACKAGE__)) {
-#    $s .= " obj->{debug}=".u(${$_[0]}->{debug});
-#  }
-#  say $s,"\n",__mytraceback();
-#}
-
   # If the first arg is an object ref, shift it off and return it;
   # Otherwise, if the caller's "current sheet" exists, return that;
   # otherwise return undef.
 
   (defined(blessed($_[0])) && $_[0]->isa(__PACKAGE__) && shift(@_))
-    || $pkg2currsheet{__userpkg()};
-
-#  my $selfarg = (defined(blessed($_[0])) && $_[0]->isa(__PACKAGE__) && shift(@_));
-#  if ($selfarg) {
-#    say "### Explicit self $selfarg for ",__methname_desc();
-#    return $selfarg;
-#  } else {
-#    my $cs = $pkg2currsheet{__userpkg()};
-#    if ($cs) {
-#      say "### Implied cs=",u($cs)," for ",__methname_desc();
-#    } else {
-#      say "### NO cs for ",__methname_desc();
-#    }
-#    return $cs
-#  }
+    || $pkg2currsheet{__find_userpkg()};
 }
 sub __selfmust { # sheet must exist, otherwise throw
-oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   &__self_ifexists || do{
     my $pkg = caller(1);
     croak __methname()," : No sheet is defined in $pkg\n"
   };
 }
+
 sub __self { # a new empty sheet is created if necessary
-oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   &__self_ifexists || do{
     # Create a new empty sheet and make it the caller's "current sheet".
     my %opts;
-    my ($frame, $args) = __usercall_info(0); # {cmd_nesting} not possible
+    my ($frame, $args) = __usercall_info();
 
-    # If the function which triggered this happens to start with an {OPTHASH},
-    # pick up any verbose & debug options from it.  Otherwise the fallback
-    # globals will be used.  NOTE: This means that e.g. 
-    # read_spreasheet(silent=>1, ...) will affect *all* ops on the 
-    # implicitly-created sheet, whereas if a sheet already existed then a
-    # silent option would only affect the read_spreadsheet() call.
-
-    if (ref(my $hash = $args->[0]) eq "HASH") {
-      foreach my $key (qw/verbose debug silent/) {
-        $opts{$key} = $hash->{$key} if exists $hash->{$key};
-      }
-      confess "Unexpected cmd_nesting" if $hash->{cmd_nesting};
-    }
-    #??? temporarily suppress verbose to avoid logging this 'new'?
     my ($userpkg, $fn, $lno, $subname) = @{ __filter_frame($frame) };
     $opts{data_source} = "(Created implicitly by $subname at ${fn}:$lno)";
     
-    $opts{cmd_nesting}++; warn "FIXME";
-    $opts{verbose}++; warn "FIXME";
-    my $self = $pkg2currsheet{$userpkg} = Spreadsheet::Edit->new(\%opts);
-    $self->{cmd_nesting}--;
-    $opts{verbose}--; warn "FIXME";
-    warn "__self returning $self\n";
+    my $self = $pkg2currsheet{$userpkg} = __silent_new(\%opts);
     $self
   }
 }
@@ -753,34 +768,31 @@ oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
 
 ## Helpers...
 
-sub __opthash { ref($_[0]) eq "HASH" ? shift(@_) : {} }
-
+sub __opthash { 
+  ref($_[0]) eq "HASH" ? shift(@_) : {} 
+}
 sub __selfmust_opthash {
   my $self = &__selfmust;
   my $opthash = &__opthash;
   ($self, $opthash)
 }
 sub __self_opthash {
-oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   my $self = &__self;
   my $opthash = &__opthash;
   ($self, $opthash)
 }
 sub __selfonly {
-oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   my $self = &__self;
   confess __methname, " expects no arguments!\n" if @_;
   $self
 }
 sub __selfmustonly {
-oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   my $self = &__selfmust;
   confess __methname, " expects no arguments!\n" if @_;
   $self
 }
 
 sub __self_opthash_Nargs($@) {  # (num_expected_args, @_)
-oops "hasargs" if (caller(0))[4]; ###TEMP DEBUG
   my $Nargs = shift;
   my ($self, $opthash) = &__self_opthash;
   #croak
@@ -804,30 +816,27 @@ sub __validate_opthash($$;$) {
   $opthash
 }
 
-# Copy verbose/debug/silent options into $self, modifying them so that
-#   debug forces verbose and !silent
-#   verbose forces !silent
-# Optionally delete those options, if present, from the input hash.
+# Copy verbose/debug/silent options into $self, deleting them from
+# the provided options hash.  
 # RETURNS: Hash of original values to pass to _restore_stdopts()
+#
+# This is used by methods which accept {verbose} etc. options
+# which override what is in the object for the duration of that method call.
 sub _set_stdopts {
-  my ($self, $opthash, $delete) = @_;
-  my %eff_opts = %$opthash; # copy because we modify
-  if ($eff_opts{debug}) { $eff_opts{verbose} = 1; $eff_opts{silent} = 0; }
-  if ($eff_opts{verbose}) { $eff_opts{silent} = 0; }
+  my ($self, $opthash) = @_;
   my $previous = {};
   foreach my $key (qw/verbose debug silent/) {
-    $previous->{$key} = $$self->{$key} if exists $$self->{$key};
-    $$self->{$key} = $eff_opts{$key} if exists $eff_opts{$key};
-    delete $opthash->{$key} if $delete;
+    if (exists $opthash->{$key}) {
+      $previous->{$key} = $$self->{$key};
+      $$self->{$key} = delete($opthash->{$key});
+    }
   }
   $previous
 }
 sub _restore_stdopts {
   my $self = shift;
-  my $opthash = shift;
-  while (my ($k,$v) = each %$opthash) {
-    $$self->{$k} = $v;
-  }
+  my $saved = shift;
+  @$$self{keys %$saved} = values %$saved;
 }
 
 sub _validate_ident($) {
@@ -915,39 +924,37 @@ sub _carponce { # if not silent
 
 # Unlike other methods, new() takes key => value pair arguments.
 # For consistency with other methods an initial {OPTIONS} hash is
-# also allowed, but it is not special and is merged with any linear args.
+# also allowed, but it is not special in any way and is merged 
+# with any linear args (linear args override {OPTIONS}).
 
 sub new { # Strictly OO, this does not affect caller's "current sheet".
           # The corresponding functional API is new_sheet() which explicitly
           # creates a new sheet and makes it the 'current sheet'.
   my $classname = shift;
-  croak "Invalid/missing CLASSNAME (i.e. \"this\") arg"
-    if $classname !~ /^[\w_:]+$/;
-  my $opthash = ref($_[0]) eq 'HASH' ? shift() : {};
+  croak "Invalid/missing CLASSNAME (i.e. \"this\") arg" 
+    unless defined($classname) && $classname =~ /^[\w_:]+$/;
 
-  my %opts = (%$opthash, __validate_pairs(@_));
-  
+  my $opthash = &__opthash;
   # Special handling of {cmd_nesting) since there was no object to begin with:
-  #   Internal callers may pass this as a "user" option; we delete it here
-  #   so it won't be logged, but plant the value in the object below.
+  #   Internal callers may pass this as a "user" option in {OPTARGS}; 
+  #   we won't log it, but we plant it into the object below.
   #   **THE CALLER MUST DECREMENT IT LATER IF NEEDED*
-  my $cmd_nesting = delete($opts{cmd_nesting}) // 0;
+  my $cmd_nesting = delete($opthash->{cmd_nesting}) // 0;
 
-  my $logstr = %opts ? visnew()->Maxdepth(1)->Foldwidth1(40)->hvis(%opts) : "";
-
+  my %opts = (verbose => $Verbose, debug => $Debug, silent => $Silent,
+              %$opthash, 
+              __validate_pairs(@_));
+  
   my $self;
   if (my $clonee = delete $opts{clone}) { # untested as of 2/12/14
-    croak "Other options not allowed with 'clone'" if %opts;
+    delete @opts{qw/verbose debug silent/};
+    croak "Other options not allowed with 'clone': ",hvis(%opts) if %opts;
     require Clone;
     $self = Clone::clone($clonee); # in all its glory
     $$self->{data_source} = (delete $opts{data_source})
                             // "cloned from $$self->{data_source}";
   } else {
     my $hash = {
-      verbose          => $Verbose,
-      debug            => $Debug,
-      silent           => $Silent,
-
       attributes       => delete $opts{attributes} // {},
       linenums         => delete $opts{linenums} // [],
       meta_info        => delete $opts{meta_info} // [], ##### ???? obsolete ???
@@ -984,18 +991,15 @@ sub new { # Strictly OO, this does not affect caller's "current sheet".
       }
     }
   }# not cloning
+
   $$self->{cmd_nesting} = $cmd_nesting;
 
-  # Here is where explicitly specified verbose etc. are installed
-  # and debug forces verbose and !silent etc.
-  $self->_set_stdopts(\%opts, 1); # deletes verbose, etc. from %opts
+  $self->_set_verbose_debug_silent(%opts); # croaks if other keys remain
 
-  $self->_logmethifv(\"$logstr : $self");
-
-  croak "Invalid option to ",__PACKAGE__,"::new : ",hvis(%opts) if %opts;
-
-  # Validate data, default num_cols, pads rows, etc.
+  # Validate data, default num_cols, pad rows, etc.
   $self->_rows_replaced();
+
+  $self->_logmethretifv([$opthash,@_], $self);
 
   $self
 }#new
@@ -1087,7 +1091,7 @@ sub _rows_replaced {  # completely new or replaced rows, linenums, etc.
 # Allow user to find out names of tied variables
 sub tied_varnames(;@) {
   my ($self, $opts) = &__selfmust_opthash;
-  my $pkg = $opts->{package} // __userpkg($$self->{cmd_nesting});
+  my $pkg = $opts->{package} // __callerpkg();
   my $h = $$self->{pkg2tiedvarnames}->{$pkg} //= {};
   return keys %$h;
 }
@@ -1214,7 +1218,7 @@ sub tie_column_vars(;@) {
   local $$self->{verbose} = $opts->{verbose} // $$self->{verbose};
   local $$self->{debug}   = $opts->{debug} // $$self->{debug};
 
-  my $pkg = $opts->{package} // __userpkg($$self->{cmd_nesting});
+  my $pkg = $opts->{package} // __callerpkg();
 
   my (%tokens, @varnames);
   foreach (@_) { if (/:/) { $tokens{$_} = 1 } else { push @varnames, $_ } }
@@ -1234,7 +1238,7 @@ sub tie_column_vars(;@) {
   # malicious spreadsheet can not cause an exception after the compilation
   # phase.
   my $safe = delete $tokens{':safe'};
-  my ($file, $lno) = @{ __usercall_info($$self->{cmd_nesting}) }[1,2];
+  my ($file, $lno) = __fn_ln_methname();
   my $parms = [$safe, $file, $lno];
 
   # Why? Obsolete? Only for :all?? [note added Dec22]
@@ -1252,7 +1256,7 @@ sub tie_column_vars(;@) {
   my $r = $self->_tie_col_vars($pkg, $parms, @varnames);
 
   my $pfx = ($r == __TCV_REDUNDANT ? "[ALL REDUNDANT] " : "");
-  $self->_logmethifv(\$pfx,\__fmt_uqarray(keys %tokens, @varnames), \" in package $pkg");
+  $self->_logmethifv(\$pfx,\__fmt_uqarraywithqw(keys %tokens, @varnames), \" in package $pkg");
 }#tie_column_vars
 
 #
@@ -1264,10 +1268,14 @@ sub colx() { ${&__selfmustonly}->{colx} }
 sub colx_desc() { ${&__selfmustonly}->{colx_desc} }
 sub data_source(;$) {
   my $self = &__selfmust;
-  return $$self->{data_source} if @_ == 0;  # 'get' request
+  if (@_ == 0) { # 'get' request
+    $self->_logmethretifv([], $$self->{data_source});
+    return $$self->{data_source}
+  }
   $self->_logmethifv(@_);
   croak "Too many args" unless @_ == 1;
-  $$self->{data_source} = $_[0]
+  $$self->{data_source} = $_[0];
+  $self
 }
 sub linenums() { ${&__selfmustonly}->{linenums} }
 sub num_cols() { ${&__selfmustonly}->{num_cols} }
@@ -1322,14 +1330,14 @@ sub set($$$) {
   my $self = &__selfmust;
   my ($rx, $colspec, $newval) = @_;
   my $ref = $self->_getref($rx, $colspec);
-  $$ref = $newval
+  $$ref = $newval;
+  $self
 }
 
 # Print segmented log messages:
 #   Join args together, prefixing with "> " or ">> " etc.
 #   unless the previous call did not end with newline.
 # Maintains internal state.  A final call with an ending \n must occur.
-###??? Should this be an _internal function?
 sub _log {
   my $self = shift;
   state $in_midst;
@@ -1344,6 +1352,7 @@ sub _log {
 # Items are formatted by vis() and thus strings will be "quoted", except that
 # \"ref to string" inserts the string value without quotes and suppresses
 # adjacent commas (for inserting fixed annotations).
+# Object refs in the top two levels are not visualized.
 #
 # If the arguments are recognized as a sequence then they are formatted as
 # Arg0..ArgN instead of Arg1,Arg2,...,ArgN.
@@ -1388,60 +1397,97 @@ sub __validate_sheet_arg($) {
   $sheet;
 }
 
-my $trunclen = 60;
+my $trunclen = 200;
 sub fmt_sheet($) {
   my $sheet = __validate_sheet_arg( shift ) // return("undef");
-  oops($sheet) unless blessed($sheet);
-  my $s = $sheet->sheetname() || $sheet->data_source();
+  local $$sheet->{verbose} = 0;
+  my $s = $sheet->sheetname() || $sheet->data_source() || "(unk)";
   #if (length($s) > $trunclen) { $s = "...".substr($s,-($trunclen-3)) }
   if (length($s) > $trunclen) { $s = substr($s,($trunclen-3))."..." }
-  sprintf("0x%x (%s)", refaddr($sheet), $s//"");
+  #sprintf("0x%x (%s)", refaddr($sheet), $s);
+  sprintf("%s (%s)", $sheet, $s);
 }
 
-# __logmethmsg($cmd_nesting or undef, ITEMS...)
+# __methretmsg([ITEMS...])
+# __methretmsg([ITEMS...], RETVAL)
+# __methretmsg([ITEMS...], [RETVALS...])
 #
-# Returns a message string for logging the current function or method call:
+# Returns a message string relating to the current function or method call:
 #
-#   ">... [callers_file:callers_lno] calledsubname ITEMS\n"
+#   ">[callers_file:callers_lno] calledsubname ITEMS\n"
+# or
+#   ">[callers_file:callers_lno] calledsubname ITEMS -> RETURNVALS\n"
 #
-# with ITEMS formatted by fmt_list, with \n unconditionally appended.
+# with ITEMS and RETURNVALS formatted by fmt_list, with \n unconditionally 
+# appended to the overall result.
 #
-sub __logmethmsg($@) {
-  my ($nskip, @items) = @_;
-  my $prefix = __methname_desc($nskip)." ";
-  my $msg = fmt_list(\$prefix, @items);
-  oops "terminal newline in final log arg" if $msg =~ /\n"?\z/s;
+# Special case: The first ITEM is ignored if it is a ref to an empty hash;
+#   This assumes the first ITEM is from __opthash and prevents showing {}
+#   when the user actually did not pass any {OPTARGS} argument.  
+#
+sub __methretmsg($;$) {
+  my ($items, $retvals) = @_;
+  oops unless ref($items) eq "ARRAY";
+  my $showitems =
+    (ref($items->[0]) eq "HASH" && !(keys %{$items->[0]}))
+       ? [@$items[1..$#$items]] : $items;
+
+  my ($fn, $lno, $subname) = __fn_ln_methname();
+  my $msg = ">[$fn:$lno] $subname";
+  $msg .= " " if @$showitems;
+  if ($retvals) {
+    $msg .= @$showitems == 0 ? "()" : fmt_list(@$showitems);
+    oops "terminal newline in final log item" if $msg =~ /\n"?\z/s;
+    $retvals = to_aref($retvals); # $foo -> [$foo]
+    oops unless @$retvals;
+    $msg .= " -> ";
+    $msg .= fmt_list(@$retvals);
+  } else {
+    $msg .= fmt_list(@$showitems);
+  }
+  oops "terminal newline should not be included" if $msg =~ /\n"?\z/s;
   $msg."\n"
 }
-sub __logmeth($;@) { # ($nskip, @msgitems...)
-  print STDERR &__logmethmsg(@_);
+sub __logmethret($$) {
+  print STDERR &__methretmsg;
 }
 
-sub _logmethmsg {
+sub _methretmsg {
   my $self = shift;
-  __logmethmsg($$self->{cmd_nesting}, @_);
-}
-sub _logmeth {
-  my $self = shift;
-  print STDERR $self->_logmethmsg(@_);
+  # Prepend additional ">"s according to {cmd_nesting}
+  my $extraprefix = ">" x ($$self->{cmd_nesting});
+  $extraprefix . &__methretmsg(@_);
 }
 
+sub _logmethret { # returns $self for chaining
+  my $self = shift;
+  print STDERR $self->_methretmsg(@_);
+  $self
+}
+sub _logmethretifv {
+  return unless ${$_[0]}->{verbose};
+  goto &_logmethret;
+}
+
+#-----------------------------------------------
+# Simpler API for when no RETVALs
+sub _methmsg(@) { 
+  my $self = shift;
+  $self->_methretmsg(\@_);
+}
+sub _logmeth(@) { 
+  my $self = shift;
+  print STDERR $self->_methretmsg(\@_);
+  $self
+}
 sub _logmethifv {
   return unless ${$_[0]}->{verbose};
   goto &_logmeth;
 }
-
-sub __logfuncifv($@) {
-  my ($nskip, @items) = @_;
-  if (my $sheet = $pkg2currsheet{__userpkg($nskip)}) {
-    oops unless ($$sheet->{cmd_nesting}//0) == ($nskip//0);
-    $sheet->_logmethifv(@items);
-  }
-  elsif ($Verbose) { # fall back to global if no 'current sheet'
-    oops unless $nskip == 0;
-    __logmeth($nskip, @items);
-  }
+sub __logmeth(@) { 
+  print STDERR __methretmsg(\@_);
 }
+#-----------------------------------------------
 
 sub _call_usercode($$$) {
   my ($self, $code, $cxlist) = @_;
@@ -1466,11 +1512,11 @@ sub _apply_to_rows($$$;$$$) {
   my $hash = $$self;
   my ($linenums,$rows,$num_cols,$cl) = @$hash{qw/linenums rows num_cols/};
 
-  croak $self->_logmethmsg("Missing or incorrect {code} argument")
+  croak $self->_methmsg("Missing or incorrect {code} argument")
     unless ref($code) eq "CODE";
   foreach (@$cxlist) {
     if ($_ < 0 || $_ >= $num_cols) {
-      croak $self->_logmethmsg("cx $_ is out of range")
+      croak $self->_methmsg("cx $_ is out of range")
     }
   }
 
@@ -1503,6 +1549,7 @@ sub _apply_to_rows($$$;$$$) {
   croak "After completing apply, an enclosing apply was resumed, but",
         " current_rx=",$hash->{current_rx}," now points beyond the last row!\n"
     if defined($hash->{current_rx}) && $hash->{current_rx} > $#$rows;
+  $self
 }#_apply_to_rows
 
 # Rebuild %colx and %colx_desc, and tie any required new variables.
@@ -1768,9 +1815,10 @@ sub alias(@) {
       croak $@ unless $opthash->{optional} && $@ =~ /does not match/is;
       # Always throw on other errors, e.g. regex matches more than one title
     };
-    $self->_logmethifv(
-               (%$opthash ? ($opthash,\" ") : ()),
-               \"$ident => ",\__fmt_colspec_cx($spec,$cx));
+
+    # Log each pair individually
+    $self->_logmethifv($opthash, \"$ident => ",\__fmt_colspec_cx($spec,$cx));
+
     $colx->{$ident} = $cx;
     $colx_desc->{$ident} = "alias for ".__fmt_cx($cx)." (".quotekey($spec).")";
     $useraliases->{$ident} = 1;
@@ -1796,6 +1844,7 @@ sub unalias(@) {
     delete $colx_desc->{$_} // oops;
   }
   $self->_rebuild_colx();
+  $self
 }
 
 # title_rx: Get/set the title row index
@@ -1825,28 +1874,29 @@ sub unalias(@) {
 sub title_rx(;$@) {
   my ($self, $opthash_arg) = &__selfmust_opthash;
   my $opthash = { %$opthash_arg }; # make copy so we can modify it
-  my $saved_stdopts = $self->_set_stdopts($opthash, 1);
+  my @orig_args = @_;
+
+  my $saved_stdopts = $self->_set_stdopts($opthash);
+  scope_guard{ $self->_restore_stdopts($saved_stdopts) };
+
   __validate_opthash( $opthash,
                       [qw(required min_rx max_rx first_cx last_cx)],
                       "autodetect option" );
-#say dvis '###trx $saved_stdopts $opthash';
   my $rx = -999;
   if (@_ == 0) {
     # A return value was requested
     croak '{OPTARGS} passed to title_rx with no operator (get request?)'
       if %$opthash;
     $rx = $$self->{title_rx};
-    $self->_logmethifv(\"RETURNING ", $rx);
+    $self->_logmethretifv([], $rx);
   } else {
     # N.B. undef arg means there are no titles
     $rx = shift;
     my $notie = shift() if u($_[0]) eq "_notie"; # during auto-detect probes
     croak "Extraneous argument(s) to title_rx: ".avis(@_) if @_;
-    my $result_logstr = "";
     if (defined $rx) {
       if ($rx eq 'auto') {
         $rx = $self->_autodetect_title_rx($opthash);
-        $result_logstr = " -> ".u($$self->{title_rx});
       }
       elsif ($rx !~ /^\d+$/) {
         croak "Invalid title_rx argument: ", visq($rx);
@@ -1856,10 +1906,9 @@ sub title_rx(;$@) {
       }
     }
     $$self->{title_rx} = $rx;
-    $self->_logmethifv(%$opthash_arg ? $opthash_arg : \"", @_, \$result_logstr);
+    $self->_logmethretifv([$opthash_arg, @orig_args], $rx);
     $self->_rebuild_colx($notie);
   }
-  $self->_restore_stdopts($saved_stdopts);
   $rx;
 }#title_rx
 
@@ -1946,8 +1995,10 @@ sub _autodetect_title_rx {
     $$self->{title_rx} = undef; # will re-do below
   }
   if (defined $detected) {
-    # FIXME: Better logging of the command which provoked auto-detection?
-    carp("Auto-detected title_rx = $detected") if $verbose;
+    if ($verbose) { # should be $debug ??
+      my ($fn, $lno, $methname) = __fn_ln_methname();
+      print STDERR "[Auto-detected title_rx = $detected at ${fn}:$lno]\n";
+    }
     local $$self->{cmd_nesting} = $$self->{cmd_nesting} + 1;
     local $$self->{verbose} = 0; # suppress normal logging
     $self->title_rx($detected);  # shows collision warnings unless {silent}
@@ -1968,27 +2019,33 @@ sub _autodetect_title_rx {
 sub first_data_rx(;$) {
   my $self = &__self;
   my $first_data_rx = $$self->{first_data_rx};
-  return $first_data_rx if @_ == 0;    # 'get' request
+  if (@_ == 0) { # 'get' request
+    $self->_logmethretifv([], $first_data_rx);
+    return $first_data_rx;
+  }
   my $rx = __validate_nonnegi_or_undef( shift() );
-  $self->_logmethifv($rx);
+  $self->_logmethretifv([$rx]);
   # Okay if this points to one past the end
   $self->_check_rx($rx, 1) if defined $rx;  # one_past_end_ok=1
   $$self->{first_data_rx} = $rx;
-  $rx;
+  $self
 }
 sub last_data_rx(;$) {
   my $self = &__self;
   my $last_data_rx = $$self->{last_data_rx};
-  return $last_data_rx if @_ == 0;    # 'get' request
+  if (@_ == 0) { # 'get' request
+    $self->_logmethretifv([], $last_data_rx);
+    return $last_data_rx;
+  }
   my $rx = __validate_nonnegi_or_undef( shift() );
-  $self->_logmethifv($rx);
+  $self->_logmethretifv([$rx]);
   if (defined $rx) {
     $self->_check_rx($rx, 1); # one_past_end_ok=1
     confess "last_data_rx must be >= first_data_rx"
       unless $rx >= ($$self->{first_data_rx}//0);
   }
   $$self->{last_data_rx} = $rx;
-  $rx;
+  $self
 }
 
 # move_cols ">COLSPEC",source cols...
@@ -2021,6 +2078,7 @@ sub move_cols($@) {
   };
 
   $self->_adjust_colx(\@old_cxs);
+  $self
 }
 sub move_col($$) { goto &move_cols; }
 
@@ -2076,7 +2134,7 @@ sub sort_rows(&) {
 
   oops unless defined($first_rx);
   oops unless defined($last_rx);
-  my $pkg = __userpkg($$self->{cmd_nesting});
+  my $pkg = caller;
   my @indicies = sort {
       my @row_indicies = ($a, $b);
       no strict 'refs';
@@ -2110,16 +2168,43 @@ sub delete_cols(@) {
   }
   $$self->{num_cols} -= @reverse_cxs;
   $self->_adjust_colx(\@old_cxs);
+  $self
 }
 sub delete_col($) { goto &delete_cols; }
 
-# Set option(s), returning the previous value (or the last one specified).
+# Logic which forces verbose on when debug is on, etc.
+# Used by new() and options()
+sub _set_verbose_debug_silent(@) {
+  my $self = shift;
+  foreach (pairs @_) {
+    my ($key, $val) = @$_;
+    if ($key eq "silent") {
+      $$self->{$key} = $val;
+    }
+    elsif ($key eq "verbose") {
+      $$self->{$key} = $val;
+      $$self->{silent} = 0 if $val; #?? might still want to suppress warnings
+    }
+    elsif ($key eq "debug") {
+      $$self->{$key} = $val;
+      if ($val) {
+        $$self->{silent} = 0;
+        $$self->{verbose} = "forced by {debug}";
+      } else {
+        $$self->{verbose} = 0 if u($$self->{verbose}) eq "forced by {debug}";
+      }
+    }
+    else { croak "options: Unknown option key '$key'\n"; }
+  }
+}
+
+# Get or set option(s).
 # New settings may be in an {OPTIONS} hash and/or linear args.
 # With _no_ arguments, returns a list of key => value pairs.
 sub options(@) {
   my $self = &__self_ifexists;
   if (@_ == 0) {
-    my $self = &__selfmust; # retrieve valid only if object exists
+    my $self = &__selfmust; # 'retrieve' is valid only if object exists
     my @result;
     foreach my $key (qw/verbose debug silent/) {
       push(@result, $key, $$self->{$key}) if exists $$self->{$key};
@@ -2130,26 +2215,8 @@ sub options(@) {
   }
   my $opthash = &__opthash; # shift off 1st arg iff it is a hashref
   my @eff_args = (%$opthash, &__validate_pairs);
-  my $prev;
-  foreach (pairs @eff_args) {
-    my ($key, $val) = @$_;
-    $prev = $$self->{$key};
-    if ($key eq "silent") {
-      $$self->{$key} = $val;
-    }
-    elsif ($key eq "verbose") {
-      $$self->{$key} = $val;
-      $$self->{silent} = 0 if $val;
-    }
-    elsif ($key eq "debug") {
-      $$self->{$key} = $val;
-      $$self->{verbose} = "forced by {debug}" if $val;
-      $$self->{silent} = 0 if $val;
-    }
-    else { croak "options: Unknown option key '$key'\n"; }
-  }
-  $self->_logmethifv(\__fmt_pairlist(@eff_args));
-  $prev;
+  $self->_set_verbose_debug_silent(@eff_args);
+  $self->_logmethifv(\__fmt_pairlist(@eff_args)); # returns $self
 }
 
 sub _colspecs_to_cxs_ckunique {
@@ -2179,6 +2246,7 @@ sub only_cols(@) {
   }
   $$self->{num_cols} = scalar(@cxlist);
   $self->_adjust_colx(\@cxlist);
+  $self
 }
 
 # obj->join_cols separator_or_coderef, colspecs...
@@ -2212,6 +2280,7 @@ sub join_cols(&@) {
   $self->delete_cols(@source_cxs[1..$#source_cxs]);
 
   $$self->{verbose} = $saved_v;
+  $self
 }
 sub join_cols_sep($@) { goto &join_cols }  # to match the functional API
 
@@ -2219,7 +2288,6 @@ sub rename_cols(@) {
   my $self = &__selfmust;
   croak "rename_cols expects an even number of arguments\n"
     unless scalar(@_ % 2)==0;
-  my $pkg = __userpkg($$self->{cmd_nesting});
 
   my ($num_cols, $rows, $title_rx) = @$$self{qw/num_cols rows title_rx/};
 
@@ -2240,6 +2308,7 @@ sub rename_cols(@) {
     # N.B. aliases remain pointing to the same columns regardless of names
   }
   $self->_rebuild_colx();
+  $self
 }
 
 # apply {code}, colspec*
@@ -2341,6 +2410,7 @@ sub split_col(&$$$@) {
                $old_cx, $newcols_first_cx..$newcols_first_cx+$num_insert_cols-1);
 
   $$self->{verbose} = $saved_v;
+  $self
 }
 
 sub reverse_cols() {
@@ -2351,6 +2421,7 @@ sub reverse_cols() {
     @$row = reverse @$row;
   }
   $self->_adjust_colx([reverse 0..$num_cols-1]);
+  $self
 }
 
 sub transpose() {
@@ -2388,6 +2459,7 @@ sub transpose() {
   $$self->{data_source} .= " transposed";
 
   $self->_rows_replaced;
+  $self
 }#transpose
 
 # delete_rows rx ...
@@ -2456,6 +2528,7 @@ sub delete_rows(@) {
 
   #warn "### AFTER delete_rows:\n",
   #     map( { "   [$_]=(".join(",",@{$rows->[$_]}).")\n" } 0..$#$rows);
+  $self
 }#delete_rows
 sub delete_row($) { goto &delete_rows; }
 
@@ -2507,7 +2580,9 @@ sub insert_row(;$) { goto &insert_rows; }
 #
 sub read_spreadsheet($;@) {
   my ($self, $opthash, $inpath) = &__self_opthash_1arg;
+
   my $saved_stdopts = $self->_set_stdopts($opthash);
+  scope_guard{ $self->_restore_stdopts($saved_stdopts) };
 
   my %csvopts = @sane_CSV_read_options;
   # Separate out Text::CSV options from %$opthash
@@ -2607,13 +2682,14 @@ sub read_spreadsheet($;@) {
                           
   my $arg = exists($opthash->{title_rx}) ? $opthash->{title_rx} : 'auto';
   { local $$self->{cmd_nesting} = $$self->{cmd_nesting} + 1;
+    $autodetect_opts{verbose} = 0; # suppress logging
     $self->title_rx(\%autodetect_opts, $arg);
   } 
 
   $self->_logmethifv($opthash, $inpath,
                      \" [title_rx set to ",vis($$self->{title_rx}),\"]");
 
-  $self->_restore_stdopts($saved_stdopts);
+  $self
 }#read_spreadsheet
 
 # write_csv {OPTHASH} "/path/to/output.csv"
@@ -2751,6 +2827,7 @@ sub write_csv(*;@) {
   if (! openhandle $dest) {
     close $fh || croak "Error writing $dest : $!\n";
   }
+  $self
 }#write_csv
 
 # Write spreadsheet with specified column formats
@@ -2795,6 +2872,7 @@ sub write_spreadsheet(*;@) {
                       cvt_from => "csv",
                       outpath => $outpath,
                      );
+  $self
 }
 
 #====================================================================
@@ -2806,8 +2884,8 @@ sub write_spreadsheet(*;@) {
 sub _onlyinapply {
   my ($self, $accessor) = @_;
   unless (defined $$self->{current_rx}) {
-    foreach (2..7) {
-      my $pkg = (caller($_))[0];
+    for (my $lvl=2; ;$lvl++) {
+      my $pkg = (caller($lvl))[0] || last;
       return $self
         if defined($pkg) && $pkg->isa("Data::Dumper") # perldoc UNIVERSAL
     }
@@ -2856,32 +2934,35 @@ sub _refval_tiehelper { # access a sheet variable which is a ref of some kind
 # If an argument is passed, change the sheet to the specified sheet.
 #
 # Always returns the previous sheet (or undef)
+#
+# Logging is enabled if 'verbose' is on in either the initial or final
+# sheet object (if any).
 sub sheet(;$$) {
-  my $has_opthash = ref($_[0]) eq "HASH" && shift(@_);
-  my $opthash = $has_opthash || {};
+  my $opthash = &__opthash;
   my $pkg = $opthash->{package} // caller();
+   oops if $pkg =~ /$mypkg/;
   my $pkgmsg = $opthash->{package} ? " [for pkg $pkg]" : "";
   my $curr = $pkg2currsheet{$pkg};
+  my $verbose = ($curr && $$curr->{verbose});
   if (@_) {
-    #__validate_sheet_arg(my $new = shift);
-    my $new = shift;
+    my $new = __validate_sheet_arg(shift @_);
+    croak "Extraneous argument(s) in call to sheet()" if @_;
     if (defined $new) {
       oops if $$new->{cmd_nesting};
+      $verbose ||= $new && $$new->{verbose};
     }
-    __validate_sheet_arg($new);
-    #local ${$curr//\{}}->{verbose} ||= (
-             #($new ? $new->{verbose} : 0) || $opthash->{verbose} );
 
-    __logfuncifv(0,($has_opthash ? $opthash : ()), 
-             \fmt_sheet($new),
+    __logmeth($opthash,
+             \(" ".fmt_sheet($new)),
              \(u($curr) eq u($new)
-             ? " [no change]" : " [previous: ".fmt_sheet($curr)."]"),
-             \$pkgmsg);
+               ? " [no change]" : " [previous: ".fmt_sheet($curr)."]"),
+             \$pkgmsg)
+      if $verbose;
 
     $pkg2currsheet{$pkg} = $new;
   } else {
-    __logfuncifv(0,\"(",($has_opthash ? $opthash : ()),\")",
-                   \(" -> ".fmt_sheet($curr)), \$pkgmsg);
+    __logmethret([$opthash], \(fmt_sheet($curr).$pkgmsg))
+      if $verbose;
   }
   $curr
 }

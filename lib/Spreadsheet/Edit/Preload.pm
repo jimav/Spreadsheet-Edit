@@ -15,20 +15,19 @@ require Spreadsheet::Edit;
 our @CARP_NOT = ('Spreadsheet::Edit');
 
 sub import {
+#use Data::Dumper::Interp; say dvis '###Preload import @_';
   my $pkg = shift;  # that's us
-  my ($inpath, @args) = @_;
+
   my $callpkg = caller($Exporter::ExportLevel);
 
   # Import Spreadsheet::Edit and the usual variables for the user
   Spreadsheet::Edit->import::into($callpkg, ':all');
 
-  # Load the spreadsheet and tie column variable in caller's package
-  my $sh = Spreadsheet::Edit->new->read_spreadsheet(@args);
+  # Load the spreadsheet
+  my $sh = Spreadsheet::Edit->new->read_spreadsheet(@_);
+#use Data::Dumper::Interp; say visnew->Objects(0)->dvis('###Preload GOT $sh');
 
-  if (ref($args[0]) eq "HASH" && exists $args[0]->{title_rx}) {
-    $sh->title_rx( $args[0]->{title_rx} );
-  }
-
+  # Tie variables in the caller's package
   $sh->tie_column_vars({package => $callpkg}, ':all');
 
   # Make it the 'current sheet' in the caller's package

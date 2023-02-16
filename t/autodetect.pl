@@ -21,11 +21,13 @@ my $inpath = create_testdata(
     ],
     gen_rows => 4,  # some more data rows
 );
+#warn dvis '### $debug $verbose $silent $Spreadsheet::Edit::Verbose';
 read_spreadsheet $inpath;
-defined(sheet()) or die "read_spreadsheet does not create current_sheet";
+defined(sheet()) or die "read_spreadsheet did not create current_sheet";
 ! ${sheet()}->{cmd_nesting} or die "non-zero cmd_nesting";
 my @saved_data = (@rows); # for construct-from-memory tests
-sheet(undef);  
+#sheet(undef);  
+sheet({verbose => 1}, undef);  
 
 sub test_autodetect($$;$) {
   my ($rs_opthash, $expected_rx, $expected_err_re) = @_;
@@ -172,7 +174,5 @@ test_autodetect {required => qr/^Notmatched/}, undef,
                 qr/Notmatch.*not found/s; 
 
 #TODO: Various operations which (with new implementation) should not auto-detect
-
-die "todo: test operating on a different package";
 
 exit 0;

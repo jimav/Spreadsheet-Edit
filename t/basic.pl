@@ -15,7 +15,7 @@ package Other {
   our $Gtitle;
   $Gtitle = "Other::Gtitle before being tied";
 
-$Spreadsheet::Edit::Debug = 1;
+#$Spreadsheet::Edit::Debug = 1;
   new_sheet
             data_source => "Othersheet",
             rows => [ [qw(OtitleA OtitleB OtitleC)],
