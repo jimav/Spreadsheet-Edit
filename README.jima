@@ -1,5 +1,7 @@
 This is maintained using Dist::Zilla
 ----------------
+https://cpantesters.org/distro/D/Spreadsheet-Edit.html
+----------------
 
 dzil clean; dzil build && dzil test
 
