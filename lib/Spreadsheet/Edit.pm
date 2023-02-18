@@ -72,7 +72,7 @@ my @stdvars = qw( $title_rx $first_data_rx $last_data_rx $num_cols
                   @rows @linenums @meta_info %colx %colx_desc $title_row
                   $rx $linenum @crow %crow );
 
-our @EXPORT_OK = (@stdvars, qw/logmsg cx2let let2cx/);
+our @EXPORT_OK = (@stdvars, qw/logmsg cx2let let2cx fmt_sheet/);
 
 our %EXPORT_TAGS = (
       STDVARS => [@stdvars],
@@ -3056,6 +3056,7 @@ sub _cellref {
   my $mutating = @_;                        # Third arg exists only for STORE
   my $colx = $$sheet->{colx};
   my $cx = $colx->{$key};
+
   if (! defined $cx) {
     exists($colx->{$key})
       or croak "'$key' is an unknown COLSPEC.  The valid keys are:\n",

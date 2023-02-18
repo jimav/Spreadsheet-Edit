@@ -4,6 +4,8 @@ use lib $Bin;
 use t_Setup;  # parses @ARGV and sets $debug, $verbose and $silent
 use t_Utils;
 
+use Spreadsheet::Edit qw/fmt_sheet/;
+
 ##########################################################################
 package Other {
   use t_Setup;
@@ -11,6 +13,7 @@ package Other {
   use Spreadsheet::Edit ':FUNCS', # don't import stdvars
                         '@rows' => { -as, '@myrows' },
                         qw(%colx @crow %crow $num_cols @linenums),
+                        qw/fmt_sheet/,
                         ;
   our $Gtitle;
   $Gtitle = "Other::Gtitle before being tied";
@@ -892,7 +895,9 @@ EOF
       apply_torx { die "bug($Gtitle)" unless $Gtitle eq "G2" } [2];
       sheet( sheet({package => "Other"}) );
       apply_torx { 
-        die "bug($Gtitle)" if defined eval{ $Gtitle };
+        ## With Perl v5.20.1 the following eval does not catch the exception
+        #die "bug($Gtitle)" if defined eval{ $Gtitle };
+        die "bug($Gtitle)" if defined eval{ my $dummy = $Gtitle };
       } [2];
       bug unless $Other::Gtitle eq "Other::Gtitle before being tied";
       eval { my $i = defined $Gtitle }; verif_eval_err;
