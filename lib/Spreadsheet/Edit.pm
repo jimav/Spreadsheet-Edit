@@ -40,7 +40,9 @@ our ($Debug, $Verbose, $Silent);
 
 ############################## Exporting stuff ############################
 #
-use parent "Exporter::Tiny";
+use Exporter::Tiny 1.001_000 (); # just to require version with non-sub generator support
+use parent "Exporter::Tiny";         # make us be a derived class
+
 require mro; # makes next::can available
 
 sub import {
@@ -213,7 +215,7 @@ use Guard qw(scope_guard);
 
 require Tie::Indirect; # OUR CUSTOM STUFF: stop using it?
 
-use Text::CSV;
+use Text::CSV 1.90_01; # 1st version with known_attributes()
 use Spreadsheet::Edit::IO qw(
    OpenAsCsv @sane_CSV_read_options @sane_CSV_write_options
    convert_spreadsheet);
