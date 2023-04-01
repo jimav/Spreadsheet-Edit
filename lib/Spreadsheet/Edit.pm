@@ -10,6 +10,8 @@ use feature qw(say state lexical_subs);
 no warnings qw(experimental::lexical_subs);
 
 package Spreadsheet::Edit;
+# VERSION from Dist::Zilla::Plugin::OurPkgVersion
+# DATE from Dist::Zilla::Plugin::OurDate
 
 # TODO FIXME: Integrate with Spreadsheet::Read and provide a formatting API
 #
@@ -505,6 +507,7 @@ sub _fmt_colx(;$$) {
 # Is a title omitted from colx?
 sub __unindexed_title($$) {
   my ($title, $num_cols) = @_;
+oops unless defined $title;
   $title eq ""
   || $title eq '^'
   || $title eq '$'
@@ -807,13 +810,16 @@ sub __self_opthash_1arg  { unshift @_,1; goto &__self_opthash_Nargs }
 sub __self_opthash_2args { unshift @_,2; goto &__self_opthash_Nargs }
 sub __self_opthash_3args { unshift @_,3; goto &__self_opthash_Nargs }
 
-# Check that an option hash has only valid keys
-sub __validate_opthash($$;$) {
-  my ($opthash, $valid_keys, $optdesc) = @_;
+# Check that an option hash has only valid keys, and values aren't undef
+sub __validate_opthash($$;@) {
+  my ($opthash, $valid_keys, %opts) = @_;
   return unless defined $opthash; # silently accept undef
   foreach my $k (keys %$opthash) {
-    croak "Unrecognized ",($optdesc//"option")," '$k'"
+    croak "Unrecognized ",($opts{desc}//"option")," '$k'"
       unless first{$_ eq $k} @$valid_keys;
+    croak "Option '$k' must be defined"
+      if $opts{undef_ok} && !defined($opthash->{$k})
+                         && !grep{$_ eq $k} @{$opts{undef_ok}};
   }
   $opthash
 }
@@ -1306,7 +1312,7 @@ sub title_row() {
 sub rx() { ${ &__selfmustonly }->{current_rx} }
 sub crow() {
   my $self = &__selfmustonly;
-  ${ $self->_onlyinapply("row() method") }->{rows}->[$$self->{current_rx}]
+  ${ $self->_onlyinapply("crow() method") }->{rows}->[$$self->{current_rx}]
 }
 sub linenum() {
   my $self = &__selfmustonly;
@@ -1428,7 +1434,7 @@ sub fmt_sheet($) {
 #   when the user actually did not pass any {OPTARGS} argument.  
 #
 sub __methretmsg($;$) {
-  my ($items, $retvals) = @_;
+  my $items = $_[0];
   oops unless ref($items) eq "ARRAY";
   my $showitems =
     (ref($items->[0]) eq "HASH" && !(keys %{$items->[0]}))
@@ -1437,11 +1443,11 @@ sub __methretmsg($;$) {
   my ($fn, $lno, $subname) = __fn_ln_methname();
   my $msg = ">[$fn:$lno] $subname";
   $msg .= " " if @$showitems;
-  if ($retvals) {
+  if (@_ > 1) {
+    my $retvals = to_aref($_[1]);
+    oops unless @$retvals;
     $msg .= @$showitems == 0 ? "()" : fmt_list(@$showitems);
     oops "terminal newline in final log item" if $msg =~ /\n"?\z/s;
-    $retvals = to_aref($retvals); # $foo -> [$foo]
-    oops unless @$retvals;
     $msg .= " -> ";
     $msg .= fmt_list(@$retvals);
   } else {
@@ -1792,9 +1798,8 @@ sub alias(@) {
   my $self = &__selfmust;
   my $opthash = ref($_[0]) eq 'HASH' ? shift() : {};
   if ($opthash) {
-    __validate_opthash($opthash,
-                       [qw(optional)],
-                       "alias option");
+    __validate_opthash($opthash, [qw(optional)],
+                       desc => "alias option");
   }
   croak "'alias' expects an even number of arguments\n"
     unless scalar(@_ % 2)==0;
@@ -1883,7 +1888,8 @@ sub title_rx(;$@) {
 
   __validate_opthash( $opthash,
                       [qw(required min_rx max_rx first_cx last_cx)],
-                      "autodetect option" );
+                      desc => "autodetect option",
+                      undef_ok => [] );
   my $rx = -999;
   if (@_ == 0) {
     # A return value was requested
@@ -1923,6 +1929,7 @@ sub _autodetect_title_rx {
   # Filter out titles which can not be used as a COLSPEC
   my @required_specs = $opthash->{required}
                          ? to_array($opthash->{required}) : ();
+  croak "undef value in {required}" if grep{! defined} @required_specs;
   @required_specs = grep{ !__unindexed_title($_, $num_cols) } @required_specs;
 
   my $min_rx   = __validate_nonnegi($opthash->{min_rx}//0, "min_rx");
@@ -2605,7 +2612,8 @@ sub read_spreadsheet($;@) {
       qw/tempdir use_gnumeric sheetname/, # for OpenAsCsv
       qw/required min_rx max_rx first_cx last_cx/, # for title_rx
                       ],
-                      "read_spreadsheet option" );
+                      desc => "read_spreadsheet option",
+                      undef_ok => [qw/verbose silent debug use_gnumeric/] );
 
   # convert {encoding} to {iolayers}
   if (my $enc = delete $opthash->{encoding}) {
@@ -3593,10 +3601,10 @@ C<read_spreadsheet> automatically sets the title row.
 Titles are disabled and any existing COLSPECs derived from
 titles are invalidated.  Auto-detection is I<disabled>.
 
-=head2 title_rx {AUTODETECT_OPTIONS} ;
+=head2 title_rx {AUTODETECT_OPTIONS} 'auto';
 
-Auto-detection of a title row is immediately performed, using
-C<< {AUTODETECT_OPTIONS} >> to modify existing auto-detect options
+Immediately perform auto-detection of the title row using
+C<< {AUTODETECT_OPTIONS} >> to modify any existing auto-detect options
 (see C<read_spreadsheet> for a description of the options).
 
 

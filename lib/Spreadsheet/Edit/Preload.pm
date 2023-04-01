@@ -8,6 +8,8 @@ use strict; use warnings FATAL => 'all'; use feature qw/say state/;
 use utf8;
 
 package Spreadsheet::Edit::Preload;
+# VERSION from Dist::Zilla::Plugin::OurPkgVersion
+# DATE from Dist::Zilla::Plugin::OurDate
 
 use Carp;
 use Import::Into;
