@@ -504,14 +504,14 @@ sub _fmt_colx(;$$) {
          ], $indent, $foldwidth
 }
 
-# Is a title omitted from colx?
+# Is a title a special symbol or looks like a cx number?
 sub __unindexed_title($$) {
   my ($title, $num_cols) = @_;
 oops unless defined $title;
   $title eq ""
   || $title eq '^'
   || $title eq '$'
-  || ( ($title =~ /^[1-9]\d*$/ || $title eq "0")
+  || ( ($title =~ /^[1-9]\d*$/ || $title eq "0") # not with leading zeros
        && $title <= $num_cols )
 }
 sub _unindexed_title { #method for use by tests
@@ -519,14 +519,31 @@ sub _unindexed_title { #method for use by tests
   __unindexed_title(shift(), $$self->{num_cols});
 }
 
-# Return { title => cx, ... }
-sub _get_indexed_titles {
+# Return (normals, unindexed) where each is [title => cx, ...] sorted by cx
+sub _get_usable_titles { 
   my $self = shift;
   my ($rows, $title_rx, $num_cols) = @$$self{qw{rows title_rx num_cols}};
   my $title_row = $rows->[$title_rx // oops];
-  return {
-    map{ my $t = $title_row->[$_];
-         __unindexed_title($t,$num_cols) ? () : ($t => $_) } 0 .. $num_cols-1 };
+  my @unindexed;
+  my @normals;
+  my %seen;
+  for my $cx (0 .. $num_cols-1) {
+    my $title = $title_row->[$cx];
+    next if $title eq "";
+    if ($seen{$title}++) {
+      $self->_carponce("Warning: Non-unique title ", visq($title), " will not be usable for COLSPEC\n") unless $$self->{silent};
+      @normals = grep{ $_->[0] ne $title } @normals;
+      @unindexed = grep{ $_->[0] ne $title } @unindexed;
+      next;
+    }
+    if (__unindexed_title($title, $num_cols)) {
+      push @unindexed, [$title, $cx];
+    } else {
+      push @normals, [$title, $cx];
+    }
+  }
+  [sort { $a->[1] <=> $b->[1] } @normals],
+    [sort { $a->[1] <=> $b->[1] } @unindexed]
 }
 
 # Non-OO api: Explicitly create a new sheet and make it the "current sheet".
@@ -817,7 +834,7 @@ sub __validate_opthash($$;@) {
   foreach my $k (keys %$opthash) {
     croak "Unrecognized ",($opts{desc}//"option")," '$k'"
       unless first{$_ eq $k} @$valid_keys;
-    croak "Option '$k' must be defined"
+    confess "Option '$k' must be defined"
       if $opts{undef_ok} && !defined($opthash->{$k})
                          && !grep{$_ eq $k} @{$opts{undef_ok}};
   }
@@ -1571,7 +1588,7 @@ sub _apply_to_rows($$$;$$$) {
 # When building %colx, conflicts are resolved using these priorities:
 #
 #   User-defined aliases (ALWAYS valid)
-#   Titles
+#   Titles (if unique)
 #   Trimmed titles (with leading & trailing spaces removed)
 #   Automatic aliases
 #   ABC letter-codes
@@ -1600,12 +1617,14 @@ sub _rebuild_colx {
   %$colx = ();
   %$colx_desc = ();
 
-  my sub __putback($$$) {
-    my ($key, $cx, $desc) = @_;
+  my sub __putback($$$;$) {
+    my ($key, $cx, $desc, $nomasking) = @_;
     if (defined (my $ocx = $colx->{$key})) {
-      $self->_carponce("Warning: ", visq($key), " ($desc) is MASKED BY (",
-                       $colx_desc->{$key}, ")")
-        unless $cx == $ocx || $silent;
+      if ($cx != $ocx) {
+        oops if $nomasking; # _get_usable_titles should have screen out
+        $self->_carponce("Warning: ", visq($key), " ($desc) is MASKED BY (",
+                         $colx_desc->{$key}, ")") unless $silent;
+      }
     } else {
       oops if exists $colx->{$key};
       $colx->{$key} = $cx;
@@ -1621,24 +1640,24 @@ sub _rebuild_colx {
 
   if (defined $title_rx) {
     # Add non-conflicting titles
-    my $indexed_titles = $self->_get_indexed_titles;
-    while (my ($title, $cx) = each %$indexed_titles) {
-      __putback($title, $cx, __fmt_cx($cx).": Title");
+    my ($normal_titles, $unindexed_titles) = $self->_get_usable_titles;
+    foreach (@$normal_titles) {
+      my ($title, $cx) = @$_;
+      __putback($title, $cx, __fmt_cx($cx).": Title", 1); # nomasking==1
     }
     # Titles with leading & trailing spaces trimmed off
-    while (my ($title, $cx) = each %$indexed_titles) {
+    foreach (@$normal_titles) {
+      my ($title, $cx) = @$_;
       my $key = $title;
       $key =~ s/\A\s+//s; $key =~ s/\s+\z//s;
       if ($key ne $title) {
-        __putback($key, $cx, __fmt_cx($cx).": Title trimmed of lead/trailing spaces");
+        __putback($key, $cx, __fmt_cx($cx).": Title sans lead/trailing spaces",1);
       }
     }
     # Automatic aliases
     # N.B. These come from all titles, not just "normal" ones
-    my $title_row = $rows->[$title_rx];
-    for my $cx (0 .. $num_cols-1) {  # each @{aref overload} does not work
-      my $title = $title_row->[$cx];
-      next if $title eq "";
+    foreach (@$normal_titles, @$unindexed_titles) {
+      my ($title, $cx) = @$_;
       my $ident = title2ident($title);
       __putback($ident, $cx, __fmt_cx($cx).": Automatic alias for title");
     }
@@ -2612,8 +2631,8 @@ sub read_spreadsheet($;@) {
       qw/tempdir use_gnumeric sheetname/, # for OpenAsCsv
       qw/required min_rx max_rx first_cx last_cx/, # for title_rx
                       ],
-                      desc => "read_spreadsheet option",
-                      undef_ok => [qw/verbose silent debug use_gnumeric/] );
+      desc => "read_spreadsheet option",
+      undef_ok => [qw/title_rx verbose silent debug use_gnumeric/] );
 
   # convert {encoding} to {iolayers}
   if (my $enc = delete $opthash->{encoding}) {

@@ -599,7 +599,7 @@ sub filepath_from_spec($) {
 #die "TEX";
 
 # Construct a file + sheetname spec in the preferred form for humans to read
-sub _form_spec_with_sheetname($$) {
+sub form_spec_with_sheetname($$) {
   my ($filepath, $sheetname) = @_;
   confess "bug" if defined sheetname_from_spec($filepath);
    "${filepath}[${sheetname}]"
@@ -1224,6 +1224,11 @@ Functions which decompose strings giving a spreadsheet path and possibly sheetna
 as "FILEPATH!SHEETNAME", "FILEPATH|||SHEETNAME", or "FILEPATH[SHEETNAME]".
 C<sheetname_from_spec> returns C<undef> if the input does not have a
 a sheetname suffix.
+
+=head2 form_spec_with_sheetname(PATH, SHEENAME)
+
+Composes a combined string in a "preferred" format ("PATH!SHEETNAME" or one of the others;
+which is not specified).
 
 =cut
 
