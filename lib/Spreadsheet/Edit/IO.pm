@@ -17,6 +17,7 @@ use Exporter 'import';
 our @EXPORT_OK = qw(@sane_CSV_read_options @sane_CSV_write_options
                     cx2let let2cx cxrx2sheetaddr convert_spreadsheet OpenAsCsv
                     sheetname_from_spec filepath_from_spec
+                    form_spec_with_sheetname
                    );
 
 # TODO: Provide "known_attributes" function ala Text::CSV::known_attributes()
