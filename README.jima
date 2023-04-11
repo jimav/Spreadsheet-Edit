@@ -1,7 +1,5 @@
 This is maintained using Dist::Zilla
 ----------------
-https://cpantesters.org/distro/D/Spreadsheet-Edit.html
-----------------
 
 dzil clean; dzil build && dzil test
 
@@ -13,4 +11,12 @@ Git book: https://git-scm.com/book/en/v2
 
 ----------------
 git tag -a v2.18 -m "my version 2.18" # Full bodied "Annotated" tag
+----------------
+git describe [HEAD is default] prints closest "tag-#-gitobj" 
+git show <tag-#-gitobj>:<filepath> prints specified version of that file
+----------------
+
+https://cpantesters.org/distro/D/Spreadsheet-Edit.html
+
+http://matrix.cpantesters.org/?dist=Spreadsheet-Edit
 

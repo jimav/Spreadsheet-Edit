@@ -600,11 +600,16 @@ sub filepath_from_spec($) {
 #die "TEX";
 
 # Construct a file + sheetname spec in the preferred form for humans to read
+# If sheetname is undef, just return the file path
 sub form_spec_with_sheetname($$) {
-  my ($filepath, $sheetname) = @_;
-  confess "bug" if defined sheetname_from_spec($filepath);
-   "${filepath}[${sheetname}]"
-  #"${filepath}|||${sheetname}"
+  my ($filespec, $sheetname) = @_;
+  my $embedded_sheetname = sheetname_from_spec($filespec);
+  confess "both embedded and separate sheetnames given"
+    if $embedded_sheetname && $sheetname && $embedded_sheetname ne $sheetname;
+  $sheetname //= $embedded_sheetname;
+  my $filepath = filepath_from_spec($filespec);
+  $sheetname ? "${filepath}[${sheetname}]" : $filepath
+  #$sheetname ? "${filepath}|||${sheetname}" : $filepath
 }
 
 # Convert between spreadsheet and CSV file (either direction),
@@ -907,7 +912,7 @@ sub convert_spreadsheet($;@) {
   return {
     map{ ($_ => $opts{$_}) }
     grep{ defined $opts{$_} }
-    qw(inpath sheet outpath iolayers cvt_from cvt_to verbose debug)
+    qw(inpath sheetname outpath iolayers cvt_from cvt_to verbose debug)
   }
 }
 
