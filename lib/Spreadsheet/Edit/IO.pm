@@ -32,7 +32,8 @@ use Scalar::Util qw(openhandle);
 use Guard qw(guard scope_guard);
 use Fcntl qw(:flock :seek);
 use Encode qw(decode);
-use Data::Dumper::Interp qw(vis visq dvis ivis qsh u);
+# DDI 5.015 is needed for 'qshlist'
+use Data::Dumper::Interp qw/vis visq dvis ivis qsh qshlist u/;
 
 # Libre Office text converter "charset" numbers
 my %LO_charsets = (
@@ -244,6 +245,9 @@ sub _runcmd($@) {
     if ($opts->{suppress_stderr}) {
       open(STDERR, ">", devnull()) or croak $!;
     }
+    if ($opts->{suppress_stdout}) {
+      open(STDOUT, ">", devnull()) or croak $!;
+    }
     exec(@cmd) or print "### exec failed: $!\n";
     die;
   }
@@ -368,29 +372,29 @@ sub _convert_using_openlibre($) {
 
   my ($ifbase, $idir, $isuffix) = fileparse($opts->{inpath}, qr/\.[^.]+/);
   my ($ofbase, $odir, $osuffix) = fileparse($opts->{outpath}, qr/\.[^.]+/);
-
-  # 2/10/21: This is ridiculous.  An undiagnosed problem causes an exception
-  #  in unoconv when an output file given with -o has a certain name.
-  #  Which particular file name results in an abort seems to depend on the
-  #  directory.  Names like "out.xlsx" or "xout.xlsx" have been problematic
-  #  (and yes, the files did not exist beforehand).  Hard to believe.
-  #
-  #  Anyway, I'm trying to substitute a file name which empirically is
-  #  "safe" from this problem, and renaming the result afterwards
-  #
-  my $tmp_outpath = $opts->{tempdir}."/SAFENAME".$osuffix;
-  my @postcmd = ("mv", "-f", "$tmp_outpath", $opts->{outpath});
+  my @postcmd;
 
   my ($prog, @cmd);
   if (0) {
   }
-  # unoconv is deprecated now and spews warnings about and ol Python library
-  # So use libreoffice directly...
+#  # unoconv is deprecated now and spews warnings about and ol Python library
+#  # So use libreoffice directly...
 #  elsif ($prog =
 #          _find_prog("unoconv", $ENV{PATH}) //
 #          _find_prog("unoconv", [reverse glob "/opt/libreoffice*/program"]) //
 #          _find_prog("unoconv", [reverse glob "/opt/openoffice*/program"])
 #     ) {
+#  # 2/10/21: This is ridiculous.  An undiagnosed problem causes an exception
+#  #  in unoconv when an output file given with -o has a certain name.
+#  #  Which particular file name results in an abort seems to depend on the
+#  #  directory.  Names like "out.xlsx" or "xout.xlsx" have been problematic
+#  #  (and yes, the files did not exist beforehand).  Hard to believe.
+#  #
+#  #  Anyway, I'm trying to substitute a file name which empirically is
+#  #  "safe" from this problem, and renaming the result afterwards
+#  #
+#  my $tmp_outpath = $opts->{tempdir}."/SAFENAME".$osuffix;
+#  @postcmd = ("mv", "-f", "$tmp_outpath", $opts->{outpath});
 #    @cmd = ($prog,
 #                   ($opts->{debug} ? ("-vvv") :
 #                    $opts->{debug} ? ("-v") :
@@ -427,8 +431,9 @@ sub _convert_using_openlibre($) {
     @cmd = ($prog, "--headless", "--invisible",
                    "--convert-to", $lo_cvtto,
                    "--outdir", $odir, $opts->{inpath});
-    #
-    # NOW TO SET OUTPUT ENCODING? libreoffice --help hints that
+    $opts->{suppress_stdout} = 1; # avoid "convert ..." message
+    
+    # HOW TO SET OUTPUT ENCODING? libreoffice --help hints that
     #   output filters take humanized options.  For example,
     #     --convert-to "txt:Text (encoded):UTF8" for .doc files.
     #   but it does not mention createing csv files.
@@ -452,11 +457,15 @@ sub _convert_using_openlibre($) {
     if ("@cmd" =~ / -o \/tmp\/out\./ || ($ENV{PWD}//"") eq "/tmp" && "@cmd" =~ / -o (?:\.\/)?out\./) {
       _warn "**KNOWN unoconv bug causes abort if output file is /tmp/out.* (yes, strange)\n";
     }
-    croak "($$) Conversion of '$opts->{inpath}' to $outsuf failed\n(make sure libre/open office is not running)\n"
+    croak "($$) Conversion of '$opts->{inpath}' to $outsuf failed\n",
+          "(make sure libre/open office is not running)\n"
   }
-  elsif (! -f $tmp_outpath) {
-    croak "($$) Conversion of $opts->{inpath} to $tmp_outpath SILENTLY failed\n",
-          "  cmd: @cmd\n",
+  elsif (! -f $opts->{outpath}) {
+    #system "set -x; ls -la '$odir' >&2"; ###TEMP DEBUG
+    #system "set -x; ls -la '$opts->{outpath}' >&2"; ###TEMP DEBUG
+    croak "($$) Conversion of ",qsh($opts->{inpath})," to ",
+            qsh($opts->{outpath})," SILENTLY failed\n",
+          "  cmd: ",qshlist(@cmd),"\n",
           "(Make sure libre/open office is not running)\n"
   }
 
@@ -546,7 +555,7 @@ sub _convert_using_gnumeric($) {  # use ssconvert
       # Before showing a complicated ssconvert failure with backtrace,
       # check to see if the problem is just a non-existent input file
       { open my $dummy_fh, "<", $eff_inpath or croak "$eff_inpath : $!"; }
-      my $failmsg = "($$) Conversion of '$opts->{inpath}' to $eff_outpath failed\n"."cmd: ".(join " ", map{qsh} @cmd)."\n";
+      my $failmsg = "($$) Conversion of '$opts->{inpath}' to $eff_outpath failed\n"."cmd: ".qshlist(@cmd)."\n";
       if ($suppress_stderr) {  # repeat showing all output
         if (0 == _runcmd({%$opts, suppress_stderr => 0}, @cmd)) {
           _warn "Surprise!  Command failed the first time but succeeded on 2nd try!\n";
@@ -556,7 +565,7 @@ sub _convert_using_gnumeric($) {  # use ssconvert
     }
     elsif (! -e $opts->{outpath}) {
       croak "($$) Conversion SILENTLY failed\n(using $prog)\n",
-            "  cmd: @cmd\n"
+            "  cmd: ",qshlist(@cmd),"\n"
             ;
     }
     return ($enc)
