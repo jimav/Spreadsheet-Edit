@@ -27,7 +27,9 @@
 
 package t_TestCommon;
 
-use strict; use warnings  FATAL => 'all'; use feature qw/say/;
+# NO use strict/warnings here to avoid conflict with t_Common which sets them
+use t_Common qw/oops mytempfile mytempdir/;
+
 use v5.16; # must have PerlIO for in-memory files for ':silent';
 
 use Carp;
@@ -67,7 +69,6 @@ use Import::Into;
 use Data::Dumper;
 use Cwd qw/getcwd abs_path/;
 use File::Basename qw/dirname/;
-use t_Common qw/oops mytempfile mytempdir/;
 
 sub bug(@) { @_=("BUG FOUND:",@_); goto &Carp::confess }
 
@@ -138,6 +139,7 @@ sub string_to_tempfile($@) {
 # This is usually enclosed in Capture { ... }
 sub run_perlscript(@) {
   my @cmd = @_;
+  oops unless defined($cmd[0]);
   VERIF:
   { open my $fh, "<", $cmd[0] or die "$cmd[0] : $!";
     while (<$fh>) { last VERIF if /^#!.*perl|^\s*use\s+(?:warnings|\w+::)/; }
@@ -235,7 +237,8 @@ END{
 }
 #--------------- (end of :silent stuff) ---------------------------
 
-dirname(abs_path(__FILE__)) =~ m#.*/(\w+)-\w[-\w]*/# or die "Cant intuit testee module name";
+# N.B. package dir might have version like ".../ODF-lpOD_Helper-3.008/..."
+dirname(abs_path(__FILE__)) =~ m#.*/(\w+)-\w[-\w\.]*/# or die "Cant intuit testee module name";
 (my $testee_top_module = $1) =~ s/-/::/g;
 oops unless $testee_top_module;
 

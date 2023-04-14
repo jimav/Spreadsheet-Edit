@@ -68,8 +68,13 @@ sub import {
   multidimensional->unimport::out_of($target);
 
   require autovivification;
-  autovivification->unimport::out_of($target,
-                warn => qw/fetch store exists delete/);
+  # A bug makes
+  #   "no autovivification warn anything..." wrongly flag
+  #   "my %hash; delete $hash{nonexistentkey}"
+  # This happens with Perl 5.24.0 and autovivification v0.18
+  # but not with Perl5.34.0 and same autovivification.
+  # So just disable autoviv but don't enable warnings...
+  autovivification->unimport::out_of($target, qw/fetch store exists delete/);
 
   # Avoid regex performance penalty in Perl <= 5.18 if
   # $PREMATCH $MATCH or $POSTMATCH are imported (fixed in perl 5.20).
@@ -95,6 +100,11 @@ sub import {
   File::Path->import::into($target, qw/make_path rmtree/);
 
   require File::Spec;
+  require File::Spec::Functions;
+  File::Spec::Functions->import::into($target, qw/
+    canonpath catdir catfile curdir rootdir updir
+    no_upwards file_name_is_absolute devnull tmpdir splitpath splitdir 
+    abs2rel rel2abs case_tolerant/);
 
   require List::Util;
   List::Util->import::into($target, qw/reduce min max first any all none sum0/);

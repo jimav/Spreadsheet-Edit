@@ -203,6 +203,7 @@ use Data::Dumper::Interp;
 
 use Carp;
 our @CARP_NOT = qw(Spreadsheet::Edit
+                   Spreadsheet::Edit::IO
                    Tie::Indirect::Array Tie::Indirect::Hash
                    Tie::Indirect::Scalar
                   );
