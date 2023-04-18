@@ -290,7 +290,10 @@ sub check_both($) {
   my $letters = shift;  # current column ordering
   croak "Expected $num_cols columns" unless length($letters) == $num_cols;
 
+  my %oldoptions = options();
   my $saved_options = options(verbose => 0);
+  die "Should be a boolean, not object" if ref($saved_options);
+  die "Wrong old value" unless !!$saved_options == !!$oldoptions{verbose};
   scope_guard { options(verbose => $saved_options) };
 
   check_titles $letters;

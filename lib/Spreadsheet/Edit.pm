@@ -2206,8 +2206,10 @@ sub delete_col($) { goto &delete_cols; }
 # Used by new() and options()
 sub _set_verbose_debug_silent(@) {
   my $self = shift;
+  my $oldval;
   foreach (pairs @_) {
     my ($key, $val) = @$_;
+    $oldval = $$self->{$key};
     if ($key eq "silent") {
       $$self->{$key} = $val;
     }
@@ -2226,6 +2228,7 @@ sub _set_verbose_debug_silent(@) {
     }
     else { croak "options: Unknown option key '$key'\n"; }
   }
+  $oldval 
 }
 
 # Get or set option(s).
@@ -2245,8 +2248,9 @@ sub options(@) {
   }
   my $opthash = &__opthash; # shift off 1st arg iff it is a hashref
   my @eff_args = (%$opthash, &__validate_pairs);
-  $self->_set_verbose_debug_silent(@eff_args);
-  $self->_logmethifv(\__fmt_pairlist(@eff_args)); # returns $self
+  my $oldval = $self->_set_verbose_debug_silent(@eff_args);
+  $self->_logmethretifv([\__fmt_pairlist(@eff_args)], $oldval);
+  $oldval
 }
 
 sub _colspecs_to_cxs_ckunique {
