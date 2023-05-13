@@ -50,7 +50,9 @@ use Test::More 0.98; # see UNIVERSAL
 require Exporter;
 use parent 'Exporter';
 our @EXPORT = qw/silent
-                 bug ok_with_lineno like_with_lineno
+                 bug 
+                 t_ok t_is t_like
+                 ok_with_lineno is_with_lineno like_with_lineno
                  rawstr showstr showcontrols displaystr 
                  show_white show_empty_string
                  fmt_codestring 
@@ -68,20 +70,44 @@ our @EXPORT_OK = qw/$debug $silent $verbose dprint dprintf/;
 use Import::Into;
 use Data::Dumper;
 use Cwd qw/getcwd abs_path/;
+use POSIX qw/INT_MAX/;
 use File::Basename qw/dirname/;
 
 sub bug(@) { @_=("BUG FOUND:",@_); goto &Carp::confess }
 
 # Parse manual-testing args from @ARGV 
-our ($debug, $verbose, $silent);
+my @orig_ARGV = @ARGV;
+our ($debug, $verbose, $silent, $nonrandom);
 use Getopt::Long qw(GetOptions);
 Getopt::Long::Configure("pass_through");
 GetOptions(
   "d|debug"           => sub{ $debug=$verbose=1; $silent=0 },
   "s|silent"          => \$silent,
+  "n|nonrandom"       => \$nonrandom,
   "v|verbose"         => \$verbose,
 ) or die "bad args";
 Getopt::Long::Configure("default");
+
+if ($nonrandom) {
+  # This must run before Test::More is loaded!!
+  # Normally this is the case because our package body is executed before
+  # import() is called.
+  if (open my $fh, "<", "/proc/sys/kernel/randomize_va_space") {
+    chomp(my $setting = <$fh>);
+    unless($setting eq "0") {
+      warn "WARNING: Kernel address space randomization is in effect.\n";
+      warn "To disable:  echo 0 | sudo tee /proc/sys/kernel/randomize_va_space\n";
+      warn "To re-enable echo 2 | sudo tee /proc/sys/kernel/randomize_va_space\n";
+    }
+  }
+  unless (($ENV{PERL_PERTURB_KEYS}//"") eq "2") {
+    $ENV{PERL_PERTURB_KEYS} = "2"; # deterministic
+    $ENV{PERL_HASH_SEED} = "0xDEADBEEF";
+    #$ENV{PERL_HASH_SEED_DEBUG} = "1";
+    $ENV{PERL5LIB} = join(":", @INC);
+    exec $^X, $0, @orig_ARGV; # for reproducible results
+  }
+}
 
 sub import {
   my $target = caller;
@@ -94,7 +120,7 @@ sub import {
 
   if (grep{ $_ eq ':silent' } @_) {
     @_ = grep{ $_ ne ':silent' } @_;
-    _start_silent();
+    _start_silent() unless $debug;
   }
 
   # chain to Exporter to export any other importable items
@@ -192,6 +218,7 @@ sub _start_silent() {
 
   $orig_DIE_trap = $SIG{__DIE__};
   $SIG{__DIE__} = sub{ 
+    return if $^S or !defined($^S);  # executing an eval, or Perl compiler
     my @diemsg = @_; 
     my $err=_finish_silent(); warn $err if $err;
     die @diemsg;
@@ -291,11 +318,15 @@ sub show_white(_) { # show whitespace which might not be noticed
   show_empty_string $_
 }
 
-our $showstr_maxlen = 300;
+#our $showstr_maxlen = 300;
+our $showstr_maxlen = INT_MAX;
 our @quotes = ("«", "»");
 #our @quotes = ("<<", ">>");
 sub rawstr(_) { # just the characters in French Quotes (truncated)
-  $quotes[0].(length($_[0])>$showstr_maxlen ? substr($_[0],0,$showstr_maxlen-3)."..." : $_[0]).$quotes[1]
+  # Show spaces visibly
+  my $text = $_[0];
+  $text =~ s/ /\N{MIDDLE DOT}/gs;
+  $quotes[0].(length($text)>$showstr_maxlen ? substr($text,0,$showstr_maxlen-3)."..." : $text).$quotes[1]
 }
 
 # Show controls as single-charcter indicators like DDI's "controlpics",
@@ -340,20 +371,32 @@ sub fmt_codestring($;$) { # returns list of lines
   my $i; map{ sprintf "%s%2d: %s\n", $prefix,++$i,$_ } (split /\n/,$_[0]);
 }
 
-sub ok_with_lineno($;$) {
+sub t_ok($;$) {
   my ($isok, $test_label) = @_;
   my $lno = (caller)[2];
   $test_label = ($test_label//"") . " (line $lno)";
   @_ = ( $isok, $test_label );
   goto &Test::More::ok;  # show caller's line number
 }
-sub like_with_lineno($$;$) {
+sub ok_with_lineno($;$) { goto &t_ok };
+
+sub t_is($$;$) {
   my ($got, $exp, $test_label) = @_;
   my $lno = (caller)[2];
-  $test_label = ($test_label//"") . " (line $lno)";
+  $test_label = ($test_label//$exp//"undef") . " (line $lno)";
+  @_ = ( $got, $exp, $test_label );
+  goto &Test::More::is;  # show caller's line number
+}
+sub is_with_lineno($$;$) { goto &t_is }
+
+sub t_like($$;$) {
+  my ($got, $exp, $test_label) = @_;
+  my $lno = (caller)[2];
+  $test_label = ($test_label//$exp) . " (line $lno)";
   @_ = ( $got, $exp, $test_label );
   goto &Test::More::like;  # show caller's line number
 }
+sub like_with_lineno($$;$) { goto &t_like }
 
 sub _check_end($$$) {
   my ($errmsg, $test_label, $ok_only_if_failed) = @_;
@@ -391,7 +434,6 @@ sub checkeq_literal($$$) {
         .(" " x ($hposn+length($quotes[0])))."^"
                           .($vposn > 0 ? "(line ".($vposn+1).")\n" : "\n")
         ." at line ", (caller(0))[2]."\n"
-        .visFoldwidth()."\n" 
        ) ;
   #goto &Carp::confess;
   Carp::confess(@_);
@@ -461,6 +503,10 @@ sub check($$@) {
   my ($desc, $expected_arg, @actual) = @_;
   local $_;  # preserve $1 etc. for caller
   my @expected = ref($expected_arg) eq "ARRAY" ? @$expected_arg : ($expected_arg);
+  if ($@) {
+    local $_;
+    confess "Eval error: $@\n" unless $@ =~ /fake/i;  # It's okay if $@ is "...Fake..."
+  }
   confess "zero 'actual' results" if @actual==0;
   confess "ARE WE USING THIS FEATURE? (@actual)" if @actual != 1;
   confess "ARE WE USING THIS FEATURE? (@expected)" if @expected != 1;
@@ -483,7 +529,7 @@ sub check($$@) {
               ."TESTb FAILED: ".$desc."\n"
               ."Expected (Regexp):\n".${expected}."<<end>>\n"
               ."Got:\n".displaystr($actual)."<<end>>\n"
-              .visFoldwidth()."\n" ) ;
+             ) ;
         Carp::confess(@_); #goto &Carp::confess;
       }
 #say "###ACT $actual";
@@ -503,14 +549,19 @@ sub verif_eval_err(;$) {  # MUST be called on same line as the 'eval'
   my $ln = $caller[2];
   my $fn = $caller[1];
   my $ex = $@;
-  confess "expected error did not occur at $fn line $ln\n"
+  confess "expected error did not occur at $fn line $ln\n",
+          fmtsheet(sheet({package => $caller[0]}))
     unless $ex;
 
   if ($ex !~ / at $fn line $ln\.?(?:$|\n)/s) {
-    confess "Got UN-expected err (not ' at $fn line $ln'):\n«$ex»\n"
+    confess "Got UN-expected err (not ' at $fn line $ln'):\n«$ex»\n",
+            fmtsheet(sheet({package => $caller[0]})),
+            "\n";
   }
   if ($msg_regex && $ex !~ qr/$msg_regex/) {
-    confess "Got UN-expected err (not matching $msg_regex) at $fn line $ln'):\n«$ex»\n"
+    confess "Got UN-expected err (not matching $msg_regex) at $fn line $ln'):\n«$ex»\n",
+            fmtsheet(sheet({package => $caller[0]})),
+            "\n";
   }
   verif_no_internals_mentioned($ex);
   dprint "Got expected err: $ex\n";
