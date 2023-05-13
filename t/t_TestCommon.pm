@@ -37,6 +37,7 @@ BEGIN{
   # Unicode support
   # This must be done before loading Test::More to be effective
   confess "Test::More already loaded!" if defined( &Test::More::ok );
+  confess "Test2::V0 already loaded!" if defined( &Test2::V0::import );
 
   # Maybe we should just call binmode(encoding...) on STDOUT & STDERR?
   use open IO => ':encoding(UTF-8)', ':std';
@@ -45,7 +46,8 @@ BEGIN{
   STDERR->autoflush(1);
   STDOUT->autoflush(1);
 }
-use Test::More 0.98; # see UNIVERSAL
+#use Test::More 0.98; # see UNIVERSAL
+use Test2::V0; # a huge collection of tools
 
 require Exporter;
 use parent 'Exporter';
@@ -59,7 +61,7 @@ our @EXPORT = qw/silent
                  verif_no_internals_mentioned 
                  insert_loc_in_evalstr verif_eval_err 
                  timed_run
-                 checkeq_literal expect1 check _check_end
+                 mycheckeq_literal expect1 mycheck _mycheck_end
                  arrays_eq hash_subset
                  run_perlscript
                  @quotes
@@ -116,7 +118,8 @@ sub import {
   # (prevents corrupting $!/ERRNO in subsequent tests)
   eval '$[' // die;
 
-  Test::More->import::into($target);
+  #Test::More->import::into($target);
+  Test2::V0->import::into($target);
 
   if (grep{ $_ eq ':silent' } @_) {
     @_ = grep{ $_ ne ':silent' } @_;
@@ -127,8 +130,10 @@ sub import {
   goto &Exporter::import
 }
 
-sub dprint(@)   { Test::More::note(@_)               if $debug };
-sub dprintf($@) { Test::More::note($_[0],@_[1..$#_]) if $debug };
+#sub dprint(@)   { Test::More::note(@_)               if $debug };
+#sub dprintf($@) { Test::More::note($_[0],@_[1..$#_]) if $debug };
+sub dprint(@)   { Test2::V0::note(@_)               if $debug };
+sub dprintf($@) { Test2::V0::note($_[0],@_[1..$#_]) if $debug };
 
 sub arrays_eq($$) {
   my ($a,$b) = @_;
@@ -249,7 +254,8 @@ sub silent(&) {
   };
   my $errmsg = _finish_silent();
   local $Test::Builder::Level = $Test::Builder::Level + 1;
-  Test::More::ok(! defined($errmsg), $errmsg);
+  #Test::More::ok(! defined($errmsg), $errmsg);
+  Test2::V0::ok(! defined($errmsg), $errmsg);
   wantarray ? @result : $result[0]
 }
 END{
@@ -376,7 +382,8 @@ sub t_ok($;$) {
   my $lno = (caller)[2];
   $test_label = ($test_label//"") . " (line $lno)";
   @_ = ( $isok, $test_label );
-  goto &Test::More::ok;  # show caller's line number
+  #goto &Test::More::ok;  # show caller's line number
+  goto &Test2::V0::ok; # show caller's line number
 }
 sub ok_with_lineno($;$) { goto &t_ok };
 
@@ -385,7 +392,8 @@ sub t_is($$;$) {
   my $lno = (caller)[2];
   $test_label = ($test_label//$exp//"undef") . " (line $lno)";
   @_ = ( $got, $exp, $test_label );
-  goto &Test::More::is;  # show caller's line number
+  #goto &Test::More::is;  # show caller's line number
+  goto &Test2::V0::ok; # show caller's line number
 }
 sub is_with_lineno($$;$) { goto &t_is }
 
@@ -394,24 +402,25 @@ sub t_like($$;$) {
   my $lno = (caller)[2];
   $test_label = ($test_label//$exp) . " (line $lno)";
   @_ = ( $got, $exp, $test_label );
-  goto &Test::More::like;  # show caller's line number
+  #goto &Test::More::like;  # show caller's line number
+  goto &Test2::V0::ok; # show caller's line number
 }
 sub like_with_lineno($$;$) { goto &t_like }
 
-sub _check_end($$$) {
+sub _mycheck_end($$$) {
   my ($errmsg, $test_label, $ok_only_if_failed) = @_;
   return
     if $ok_only_if_failed && !$errmsg;
   my $lno = (caller)[2];
-  &Test::More::diag("**********\n${errmsg}***********\n") if $errmsg;
+  &Test2::V0::diag("**********\n${errmsg}***********\n") if $errmsg;
   @_ = ( !$errmsg, $test_label );
   goto &ok_with_lineno;
 }
 
-# Nicer alternative to check() when 'expected' is a literal string, not regex
-sub checkeq_literal($$$) {
+# Nicer alternative to mycheck() when 'expected' is a literal string, not regex
+sub mycheckeq_literal($$$) {
   my ($desc, $exp, $act) = @_;
-  #confess "'exp' is not plain string in checkeq_literal" if ref($exp); #not re!
+  #confess "'exp' is not plain string in mycheckeq_literal" if ref($exp); #not re!
   $exp = show_white($exp); # stringifies undef
   $act = show_white($act);
   return unless $exp ne $act;
@@ -440,7 +449,7 @@ sub checkeq_literal($$$) {
 }
 sub expect1($$) {
   @_ = ("", @_);
-  goto &checkeq_literal;
+  goto &mycheckeq_literal;
 }
 
 # Convert a literal "expected" string which contains things which are
@@ -498,8 +507,8 @@ sub expstr2re($) {
   $re
 }
 
-# check $test_desc, string_or_regex, result
-sub check($$@) {
+# mycheck $test_desc, string_or_regex, result
+sub mycheck($$@) {
   my ($desc, $expected_arg, @actual) = @_;
   local $_;  # preserve $1 etc. for caller
   my @expected = ref($expected_arg) eq "ARRAY" ? @$expected_arg : ($expected_arg);
@@ -537,7 +546,7 @@ sub check($$@) {
     } else {
       unless ($expected eq $actual) {
         @_ = ("TESTc FAILED: $desc", $expected, $actual);
-        goto &checkeq_literal
+        goto &mycheckeq_literal
       }
     }
   }

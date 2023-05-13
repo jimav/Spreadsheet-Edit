@@ -457,7 +457,7 @@ sub _convert_using_openlibre($) {
   }
 
   if ($opts->{allsheets}) {
-    # Rename files to match our API (omit the spreadsheetbasename. prefix)
+    # Rename files to match our API (omit the spreadsheetbasename- prefix)
     my $outdir = $opts->{outdir};
     foreach my $orig (_slurp_directory($outdir)) {
       next if $opts->{existing_in_outpath}->{$orig};
@@ -471,7 +471,7 @@ sub _convert_using_openlibre($) {
     # Move the output file to the desired destination
     my $thefile = catfile($opts->{outdir},"$opts->{basename}.$opts->{cvt_to}");
     unless (-e $thefile) {
-      system "set -x; ls -la ".qsh($opts->{outdir})." >&2"; ###DEBUG
+      system "set -x; ls -la ".qsh($opts->{outdir})." >&2"; 
       oops "Expected file not found: ",qsh($thefile);
     }
     File::Copy::move($thefile, $opts->{outpath})
@@ -725,6 +725,10 @@ sub _process_args($;@) { # returns (key => value, ...)
       if exists $opts{sheetname};
     $opts{sheetname} = delete $opts{sheet};
   }
+  # FIXME sorta-BUG HERE:
+  #   Should re-use the same tempdir (?) to avoid proliferation if
+  #   many spreadsheets are read by the same process.
+  #   (and/or provide an API to delete previous temp output files)
   $opts{tempdir} //= File::Temp::tempdir("/tmp/spread_XXXXXX", CLEANUP=>1);
 
   # inpath or outpath may have "!sheetname" appended (or alternate syntaxes),
@@ -886,7 +890,8 @@ sub convert_spreadsheet($;@) {
           " into ",qsh($opts{outpath}),"/*.$opts{cvt_to}\n"
       if $opts{verbose};
   } else {
-    $opts{outpath} //= catfile($opts{tempdir}, "$opts{basename}.$opts{cvt_to}");
+    $opts{outpath} //= catfile($opts{tempdir}, 
+                 ($opts{sheetname} || $opts{basename}).".".$opts{cvt_to});
     _warn "> Converting $opts{cvt_from} ",
           qsh(form_spec_with_sheetname($opts{inpath}, $opts{sheetname})),
           " to $opts{cvt_to} ",qsh($opts{outpath}),"\n"
@@ -966,7 +971,7 @@ sub convert_spreadsheet($;@) {
       remove_tree($topts{outpath}, { safe => 1 }) or die;
       $hash->{sheetname} = $opts{sheetname};
       $hash->{outpath} = $opts{outpath};
-      system "set -x; ls -la ".qsh($topts{tempdir}) if $opts{debug};
+      #system "set -x; ls -la ".qsh($topts{tempdir}) if $opts{debug};
       return $hash
     }
 
