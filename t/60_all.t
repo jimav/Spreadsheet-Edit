@@ -15,7 +15,10 @@ use Test2::Tools::Subtest qw/subtest_buffered subtest_streamed/;
 #     full tracebacks or other mention of internal packages
 #     (this checks that "caller_level" is handled correctly).
 #
-# "Subtests" are all the scripts called t/*.pl 
+# "Subtests" are all the scripts called t/*.pl which do NOT use
+#  the test harness infrastructure at all (otherwise we get trouble
+#  with even mis-odering, or something like that).
+#
 
 use Capture::Tiny qw/capture_merged tee_merged/;
 
@@ -56,7 +59,7 @@ for my $st (@subtests) {
                1\.\.\d+\n          # The final line
             )?\z/x
     ,
-    "checking for silence violations",
+    "checking '$st' for silence violations",
     "<<$soutput>>\nSILENCE VIOLATED by subtest '$st' --silent"
     );
     done_testing();

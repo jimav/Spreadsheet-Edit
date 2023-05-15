@@ -1,4 +1,5 @@
 #!/usr/bin/perl
+# *** DO NOT USE Test2 FEATURES becuase this is a sub-script ***
 use FindBin qw($Bin);
 use lib $Bin;
 use t_Common qw/oops mytempfile mytempdir/; # strict, warnings, Carp etc.
@@ -14,6 +15,7 @@ use t_SSUtils;
 use Capture::Tiny qw/capture_merged tee_merged/;
 
 use Spreadsheet::Edit qw/fmt_sheet cx2let let2cx sheet/;
+use Test::Deep::NoTest qw/eq_deeply/;
 
 ##########################################################################
 package Other {
@@ -293,7 +295,8 @@ sub check_both($) {
 
   my %oldoptions  = options();
   my %oldoptions2 = options(verbose => 0);
-  is(\%oldoptions, \%oldoptions2, "correct previous options", dvis('%oldoptions\n%oldoptions2'));
+  eq_deeply(\%oldoptions, \%oldoptions2)
+    or die "MISMATCH: ", dvis('%oldoptions\n%oldoptions2');
   scope_guard { options(verbose => $oldoptions2{verbose}) };
 
   check_titles $letters;
@@ -1101,6 +1104,6 @@ EOF
   die "apply broken after sort" unless arrays_eq \@Bs, [000, 888, 159];
 }
 
-done_testing();
+say "Done." unless $silent;
 exit 0;
 

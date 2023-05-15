@@ -194,7 +194,7 @@ sub run_perlscript(@) {
     # Try to erase connections to the parent's test harness
     # **DOES NOT WORK**
     local %ENV = (PATH => $ENV{PATH}, PERL5LIB => $ENV{PERL5LIB});
-    #local $ENV{PERL5LIB} = join(":", @INC);
+    local $ENV{PERL5LIB} = join(":", @INC);
     for my $fd (3..127) { POSIX::close($fd) }
 
     exec $^X, @script_and_args;

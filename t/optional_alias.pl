@@ -1,4 +1,5 @@
 #!/usr/bin/perl
+# *** DO NOT USE Test2 FEATURES becuase this is a sub-script ***
 use FindBin qw($Bin);
 use lib $Bin;
 use t_Common qw/oops mytempfile mytempdir/; # strict, warnings, Carp etc.
@@ -67,4 +68,5 @@ apply {
   eval { $Xalias3 = "foo" }; verif_eval_err qr/optional.*alias.*not.*defined/i; # write
 };
 
+say "Done." unless $silent;
 exit 0;
