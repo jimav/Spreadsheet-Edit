@@ -6,7 +6,7 @@
 # Pod documentation is below (use perldoc to view)
 
 use strict; use warnings FATAL => 'all'; use utf8;
-use feature qw(say state lexical_subs);
+use feature qw(say state lexical_subs current_sub);
 no warnings qw(experimental::lexical_subs);
 
 package Spreadsheet::Edit;
@@ -788,7 +788,7 @@ sub __self { # a new empty sheet is created if necessary
     my ($frame, $args) = __usercall_info();
 
     my ($userpkg, $fn, $lno, $subname) = @{ __filter_frame($frame) };
-    $opts{data_source} = "(Created implicitly by $subname at ${fn}:$lno)";
+    $opts{data_source} = "(Created implicitly by '$subname' at ${fn}:$lno)";
     
     my $self = $pkg2currsheet{$userpkg} = __silent_new(\%opts);
     $self
@@ -1194,13 +1194,38 @@ sub _tie_col_vars {
         # So we must insist that the entire glob does not exist.
         no strict 'refs';
         if (exists ${$p.'::'}{$ident}) {
-          croak <<EOF ;
-'$ident' clashes with an existing variable in package $p .
-    Note: This check occurs when tie_column_vars was called with option :safe,
+          my $msg = <<EOF ;
+'$ident' clashes with an existing variable in package '$p' .
+    This is dis-allowed when tie_column_vars was called with option :safe,
     in this case at ${file}:${lno} .  In this situation you can not
     explicitly declare the tied variables, and they must be tied and
     imported before the compiler sees them.
+
+    Note: The clash may not be with a scalar, but something else 
+    named '${ident}' in the same package (array, hash, sub, filehandle, 
+    etc.) Unfortunately it is not possible to distinguish a non-existent
+    scalar from a declared scalar containing an undef value
+    (see *foo{SCALAR} in 'man perlref').  
+    Therefore, to be safe, nothing with the name '${ident}' may pre-exist.
 EOF
+          if (defined(my $val = ${"${p}::${ident}"})) {
+            $msg .= "\n  Found existing non-undef scalar \$${p}::${ident} = ".vis($val)."\n";
+          }
+          if (defined(my $code = \&{"${p}::${ident}"})) {
+            $msg .= "\n  Found existing sub ${p}::${ident} = ".Data::Dumper->new([$code])->Terse(1)->Indent(0)->Deparse(1)->Dump()."\n";
+          }
+          if ($debug && eval{ require Devel::Symdump; }) {
+            my $obj = Devel::Symdump->new($p);
+            $msg .= "\nPackage $p contains:\n";
+            for my $things (qw/scalars arrays hashes functions 
+                               filehandles dirhandles ios unknowns
+                              packages/) {
+              my @names = sort grep{$_ ne ""} 
+                               map{ s/^${p}::(?:.*::)*//r } $obj->$things();
+              $msg .= "   $things :".avis(@names)."\n" if @names;
+            }
+          }
+          croak "\n$msg\n";
         }
       }
     }
@@ -2244,10 +2269,9 @@ sub delete_col($) { goto &delete_cols; }
 # Used by new() and options()
 sub _set_verbose_debug_silent(@) {
   my $self = shift;
-  my $oldval;
   foreach (pairs @_) {
     my ($key, $val) = @$_;
-    $oldval = $$self->{$key};
+    my $oldval = $$self->{$key};
     next 
       unless !!$oldval != !!$val;
     if ($key eq "silent") {
@@ -2275,29 +2299,27 @@ sub _set_verbose_debug_silent(@) {
     else { croak "options: Unknown option key '$key'\n"; }
     $$self->{$key} = $val;
   }
-  $oldval 
 }
 
 # Get or set option(s).
 # New settings may be in an {OPTIONS} hash and/or linear args.
-# With _no_ arguments, returns a list of key => value pairs.
+# Always returns the old options (key => value pairs).
 sub options(@) {
-  my $self = &__self_ifexists;
+  my $self = &__self; # auto-create sheet if necessary
+  my @old = map{ exists($$self->{$_}) ? ($_ => $$self->{$_}) : () }
+               qw/verbose debug silent/;
+  
+  my %eff_args;
   if (@_ == 0) {
-    $self //= &__selfmust; # 'retrieve' is valid only if object exists
-    my @result;
-    foreach my $key (qw/verbose debug silent/) {
-      push(@result, $key, $$self->{$key}) if exists $$self->{$key};
-    }
     croak "(list) returned but called in scalar or void context"
       unless wantarray;
-    return @result;
+  } else {
+    my $opthash = &__opthash; # shift off 1st arg iff it is a hashref
+    %eff_args = (%$opthash, &__validate_pairs);
+    $self->_set_verbose_debug_silent(%eff_args);
   }
-  my $opthash = &__opthash; # shift off 1st arg iff it is a hashref
-  my @eff_args = (%$opthash, &__validate_pairs);
-  my $oldval = $self->_set_verbose_debug_silent(@eff_args);
-  $self->_logmethretifv([\__fmt_pairlist(@eff_args)], [$oldval]);
-  $oldval
+  $self->_logmethretifv([\__fmt_pairlist(%eff_args)], [\hvis(@old)]);
+  @old;
 }
 
 sub _colspecs_to_cxs_ckunique {

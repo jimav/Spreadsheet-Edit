@@ -47,7 +47,8 @@ BEGIN{
   STDOUT->autoflush(1);
 }
 #use Test::More 0.98; # see UNIVERSAL
-use Test2::V0; # a huge collection of tools
+use Test2::V0 (); # a huge collection of tools
+use POSIX ();
 
 require Exporter;
 use parent 'Exporter';
@@ -119,7 +120,14 @@ sub import {
   eval '$[' // die;
 
   #Test::More->import::into($target);
-  Test2::V0->import::into($target);
+  #  Do not inport 1- and 2- or 3- character upper-case names, which are 
+  #  likely to clash with user variables and/or spreadsheet column letters
+  #  (when using Spreadsheet::Edit).  Test2::Tools::Compare documents some 
+  #  of these ("QUICK CHECKS") as not be exported by default, but they are 
+  #  by default re-exported by Test2::V0 anyway.
+  Test2::V0->import::into($target,
+    (map{ "!$_" } "A".."AAZ", "a".."z")
+  );
 
   if (grep{ $_ eq ':silent' } @_) {
     @_ = grep{ $_ ne ':silent' } @_;
@@ -132,8 +140,11 @@ sub import {
 
 #sub dprint(@)   { Test::More::note(@_)               if $debug };
 #sub dprintf($@) { Test::More::note($_[0],@_[1..$#_]) if $debug };
-sub dprint(@)   { Test2::V0::note(@_)               if $debug };
-sub dprintf($@) { Test2::V0::note($_[0],@_[1..$#_]) if $debug };
+#sub dprint(@)   { Test2::V0::note(@_)               if $debug };
+#sub dprintf($@) { Test2::V0::note($_[0],@_[1..$#_]) if $debug };
+# Avoid turning on Test2 if not otherwise used...
+sub dprint(@)   { print(@_)                if $debug };
+sub dprintf($@) { printf($_[0],@_[1..$#_]) if $debug };
 
 sub arrays_eq($$) {
   my ($a,$b) = @_;
@@ -169,22 +180,37 @@ sub string_to_tempfile($@) {
 # and also where -I options might supply library paths.
 # This is usually enclosed in Capture { ... }
 sub run_perlscript(@) {
-  my @cmd = @_;
-  oops unless defined($cmd[0]);
+  my @script_and_args = @_;
+  oops unless defined($script_and_args[0]);
   VERIF:
-  { open my $fh, "<", $cmd[0] or die "$cmd[0] : $!";
+  { open my $fh, "<", $script_and_args[0] or die "$script_and_args[0] : $!";
     while (<$fh>) { last VERIF if /^#!.*perl|^\s*use\s+(?:warnings|\w+::)/; }
-    confess "$cmd[0] does not appear to be a Perl script";
+    confess "$script_and_args[0] does not appear to be a Perl script";
   }
-  local $ENV{PERL5LIB} = join(":", @INC);
-  system $^X, @cmd;
+  my $pid = fork();
+  if ($pid==0) {
+    #CHILD
+    
+    # Try to erase connections to the parent's test harness
+    # **DOES NOT WORK**
+    local %ENV = (PATH => $ENV{PATH}, PERL5LIB => $ENV{PERL5LIB});
+    #local $ENV{PERL5LIB} = join(":", @INC);
+    for my $fd (3..127) { POSIX::close($fd) }
+
+    exec $^X, @script_and_args;
+    die "exec failed";
+  }
+  waitpid($pid,0);
+  return $?;
 }
 
 #--------------- :silent support ---------------------------
-# N.B. It appears, experimentally, that output from ok(), like() and friends
-# is not written to the test process's STDOUT or STDERR, so we do not need
-# to worry about ignoring those normal outputs (somehow everything is
-# merged at the right spots, presumably by a supervisory process).
+# N.B. It appears, experimentally, that with Test::More output from ok(), 
+# like() and friends is not written to the test process's STDOUT or STDERR, 
+# so we do not need to worry about ignoring those normal outputs (somehow 
+# everything is merged at the right spots, presumably by a supervisory 
+# process).
+# [Note May23: This may not be true with Test2::V0]
 #
 # Therefore tests can be simply wrapped in silent{...} or the entire
 # program via the ':silent' tag; however any "Silence expected..." diagnostics

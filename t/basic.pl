@@ -291,11 +291,10 @@ sub check_both($) {
   my $letters = shift;  # current column ordering
   croak "Expected $num_cols columns" unless length($letters) == $num_cols;
 
-  my %oldoptions = options();
-  my $saved_options = options(verbose => 0);
-  die "Should be a boolean, not object" if ref($saved_options);
-  die "Wrong old value" unless !!$saved_options == !!$oldoptions{verbose};
-  scope_guard { options(verbose => $saved_options) };
+  my %oldoptions  = options();
+  my %oldoptions2 = options(verbose => 0);
+  is(\%oldoptions, \%oldoptions2, "correct previous options", dvis('%oldoptions\n%oldoptions2'));
+  scope_guard { options(verbose => $oldoptions2{verbose}) };
 
   check_titles $letters;
   apply {
@@ -1102,5 +1101,6 @@ EOF
   die "apply broken after sort" unless arrays_eq \@Bs, [000, 888, 159];
 }
 
+done_testing();
 exit 0;
 

@@ -227,14 +227,14 @@ sub _find_prog($$) {
   my ($names, $paths) = @_;
   $names = [$names] unless ref $names;
   $paths = [$paths] unless ref $paths;
-  foreach my $dir (map {split /:/} @$paths) {
+  foreach my $dir (map {split /:/} grep{defined} @$paths) {
     foreach my $name (@$names) {
       return "$dir/$name" if -x "$dir/$name";
     }
   }
   return undef;
 }
-sub _openlibre_path() {  # "/path/to/executable" or "" if not available
+sub _openlibre_path() {  # "/path/to/executable" or undef if not available
   state $answer;
   return $answer if defined($answer);
   $answer =
@@ -246,7 +246,7 @@ sub _openlibre_path() {  # "/path/to/executable" or "" if not available
                                $ENV{PATH}) //
           _find_prog([qw(openoffice ooffice oocalc soffice scalc)],
                                [reverse glob "/opt/openoffice*/program"]) //
-          ""; 
+          undef; 
 }
 
 sub _runcmd($@) {
@@ -437,7 +437,7 @@ sub _convert_using_openlibre($) {
   # Note: unoconv seems unsupported and now spews warnings about an old
   # Python library, so we no longer use it.  Old code is in commit cac7a76b
   
-  my $prog = _openlibre_path() // oops;
+  my $prog = _openlibre_path() // croak "Libre/Open Office not found";
    
   my @cmd = ($prog, "--headless", "--invisible",
                     "--convert-to", $lo_cvtto.($opts->{outfilter_opts}//""),
@@ -836,8 +836,8 @@ sub _detect_to_from($) { # updates %$opts and returns the effective inpath
 sub _openlibre_features() {
   state $hash;
   return $hash if defined $hash;
-  my $path = _openlibre_path();
-  my ($s) = (qx/$path --version/ =~ /Libre.*? (\d+\.[\d\.]*)/);
+  my $prog = _openlibre_path() // croak "Libre/Open Office not found";
+  my ($s) = (qx/$prog --version/ =~ /Libre.*? (\d+\.[\d\.]*)/);
   my $version = version->parse("v".($s//"0.1"));
   $hash = {
     # LibreOffice 7.2 allows extracting all sheets at once
