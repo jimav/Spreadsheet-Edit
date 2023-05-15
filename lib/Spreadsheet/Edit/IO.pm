@@ -424,10 +424,23 @@ sub _convert_using_openlibre($) {
   # interactively.  Forcing a separate user-config dir seems to avoid this.
   # https://ask.libreoffice.org/en/question/290306/how-to-start-independent-lo-instance-process
   my $saved_UserInstallation = $ENV{UserInstallation};
-  $ENV{UserInstallation} = "file://".catdir($opts->{tempdir},"TMP-PROFILE");
+  { my $EUID = $>;
+    # Unique per user.  We use a lockfile to prevent concurrent access,
+    # so sharing the profile among all processes is okay. 
+    # Operations are 20% faster by not creating a new profile each time.
+    my $profile_dir = catfile(File::Spec->tmpdir(),
+                              __PACKAGE__."_${EUID}_LOprofile");
+    mkdir $profile_dir;
+    if (! -e $profile_dir) {
+      croak "$profile_dir : $!";
+    } else {
+      croak "$profile_dir is not a directory owned by you!\n"
+        unless (-d _ && -o _);
+      $ENV{UserInstallation} = "file://$profile_dir";
+    }
+  } 
   scope_guard {
     if (defined $saved_UserInstallation) {
-      remove_tree( catdir($opts->{tempdir},"TMP-PROFILE") );
       $ENV{UserInstallation} = $saved_UserInstallation;
     } else {
       delete $ENV{UserInstallation}
