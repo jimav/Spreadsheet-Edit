@@ -91,7 +91,7 @@ GetOptions(
 Getopt::Long::Configure("default");
 
 if ($nonrandom) {
-  # This must run before Test::More is loaded!!
+  # This must run before Test::More or Test2::V0 is loaded!!
   # Normally this is the case because our package body is executed before
   # import() is called.
   if (open my $fh, "<", "/proc/sys/kernel/randomize_va_space") {
@@ -124,7 +124,7 @@ sub import {
   #  of these ("QUICK CHECKS") as not be exported by default, but they are 
   #  by default re-exported by Test2::V0 anyway.
   Test2::V0->import::into($target,
-    (map{ "!$_" } "A".."AAZ", "a".."z")
+    (map{ "!$_" } "A".."AAZ")
   );
 
   if (grep{ $_ eq ':silent' } @_) {
