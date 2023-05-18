@@ -533,7 +533,7 @@ sub _convert_using_openlibre($) {
 
 sub _convert_using_gnumeric($) {  # use ssconvert
   my $opts = shift;
-  die "deprecated with extreme prejudice"; # no longer supported
+  confess "Deprecated with extreme prejudice"; # no longer supported
 
   foreach (qw/inpath cvt_to outpath/)
     { oops "missing opts->{$_}" unless exists $opts->{$_} }
@@ -1039,8 +1039,10 @@ sub convert_spreadsheet(@) {
     # 5/12/2023: Formerly we used gnumeric unless specifically told otherwise.
     # Now that we have a fix for concurrency (separate $UserInstallation dirs)
     # and now that LO (v7.2) supports "allsheets" mode we use LO for everything
-    # unless {use_gnumeric}.  This obviates the need to install gnumeric,
-    # which is not supported on non-*ix platforms.
+    # which obviates the need to install gnumeric, which is not supported
+    # on non-*ix platforms.  Currently the gnumeric code is stale...
+    croak "'use_gnumeric' is no longer supported\n" if $opts{use_gnumeric};
+
     $opts{use_gnumeric} //=
             ( $opts{allsheets} && !_openlibre_supports_allsheets() )
          #We emulate named_sheet with allsheets...
