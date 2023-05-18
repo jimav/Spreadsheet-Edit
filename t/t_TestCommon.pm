@@ -35,7 +35,7 @@ use v5.16; # must have PerlIO for in-memory files for ':silent';
 use Carp;
 BEGIN{
   # Unicode support
-  # This must be done before loading Test::More to be effective
+  # This must be done before loading Test::More or Test2 to be effective
   confess "Test::More already loaded!" if defined( &Test::More::ok );
   confess "Test2::V0 already loaded!" if defined( &Test2::V0::import );
 
@@ -46,7 +46,6 @@ BEGIN{
   STDERR->autoflush(1);
   STDOUT->autoflush(1);
 }
-#use Test::More 0.98; # see UNIVERSAL
 use Test2::V0 (); # a huge collection of tools
 use POSIX ();
 
@@ -119,7 +118,6 @@ sub import {
   # (prevents corrupting $!/ERRNO in subsequent tests)
   eval '$[' // die;
 
-  #Test::More->import::into($target);
   #  Do not inport 1- and 2- or 3- character upper-case names, which are 
   #  likely to clash with user variables and/or spreadsheet column letters
   #  (when using Spreadsheet::Edit).  Test2::Tools::Compare documents some 
@@ -138,10 +136,6 @@ sub import {
   goto &Exporter::import
 }
 
-#sub dprint(@)   { Test::More::note(@_)               if $debug };
-#sub dprintf($@) { Test::More::note($_[0],@_[1..$#_]) if $debug };
-#sub dprint(@)   { Test2::V0::note(@_)               if $debug };
-#sub dprintf($@) { Test2::V0::note($_[0],@_[1..$#_]) if $debug };
 # Avoid turning on Test2 if not otherwise used...
 sub dprint(@)   { print(@_)                if $debug };
 sub dprintf($@) { printf($_[0],@_[1..$#_]) if $debug };
@@ -180,37 +174,18 @@ sub string_to_tempfile($@) {
 # and also where -I options might supply library paths.
 # This is usually enclosed in Capture { ... }
 sub run_perlscript(@) {
-  my @script_and_args = @_;
-  oops unless defined($script_and_args[0]);
-  VERIF:
-  { open my $fh, "<", $script_and_args[0] or die "$script_and_args[0] : $!";
-    while (<$fh>) { last VERIF if /^#!.*perl|^\s*use\s+(?:warnings|\w+::)/; }
-    confess "$script_and_args[0] does not appear to be a Perl script";
-  }
-  my $pid = fork();
-  if ($pid==0) {
-    #CHILD
-    
-    # Try to erase connections to the parent's test harness
-    # **DOES NOT WORK**
-    local %ENV = (PATH => $ENV{PATH}, PERL5LIB => $ENV{PERL5LIB});
-    local $ENV{PERL5LIB} = join(":", @INC);
-    for my $fd (3..127) { POSIX::close($fd) }
-
-    exec $^X, @script_and_args;
-    die "exec failed";
-  }
-  waitpid($pid,0);
-  return $?;
+  my @perlargs = @_;  # might be ('-e', 'perlcode...')
+  unshift @perlargs, "-MCarp=verbose" if $Carp::Verbose;
+  local $ENV{PERL5LIB} = join(":", @INC);
+  system $^X, @perlargs;
 }
 
 #--------------- :silent support ---------------------------
-# N.B. It appears, experimentally, that with Test::More output from ok(), 
-# like() and friends is not written to the test process's STDOUT or STDERR, 
-# so we do not need to worry about ignoring those normal outputs (somehow 
-# everything is merged at the right spots, presumably by a supervisory 
-# process).
-# [Note May23: This may not be true with Test2::V0]
+# N.B. It appears, experimentally, that output from ok(), like() and friends
+# is not written to the test process's STDOUT or STDERR, so we do not need
+# to worry about ignoring those normal outputs (somehow everything is
+# merged at the right spots, presumably by a supervisory process).
+# [Note May23: This was with Test::More may *NOT* be true with Test2::V0 !!]
 #
 # Therefore tests can be simply wrapped in silent{...} or the entire
 # program via the ':silent' tag; however any "Silence expected..." diagnostics
@@ -280,7 +255,6 @@ sub silent(&) {
   };
   my $errmsg = _finish_silent();
   local $Test::Builder::Level = $Test::Builder::Level + 1;
-  #Test::More::ok(! defined($errmsg), $errmsg);
   Test2::V0::ok(! defined($errmsg), $errmsg);
   wantarray ? @result : $result[0]
 }
@@ -315,6 +289,9 @@ sub verif_no_internals_mentioned($) { # croaks if references found
   
   # Ignore object refs like Some::Package=THING(hexaddr)
   s/(?<!\w)\w[\w:\$]*=(?:REF|ARRAY|HASH|SCALAR|CODE|GLOB)\(0x[0-9a-f]+\)//g;
+  
+  # Ignore Data::Dumper::addrvis output like Some::Package<dec:hex>
+  s/(?<!\w)\w[\w:\$]*<\d+:[\da-f]+>//g;
   
   # Mask references to our test library files named t_something.pm
   s#\b(\bt_\w+).pm(\W|$)#<$1 .pm>$2#gs;
@@ -408,8 +385,7 @@ sub t_ok($;$) {
   my $lno = (caller)[2];
   $test_label = ($test_label//"") . " (line $lno)";
   @_ = ( $isok, $test_label );
-  #goto &Test::More::ok;  # show caller's line number
-  goto &Test2::V0::ok; # show caller's line number
+  goto &Test2::V0::ok;  # show caller's line number
 }
 sub ok_with_lineno($;$) { goto &t_ok };
 
@@ -418,8 +394,7 @@ sub t_is($$;$) {
   my $lno = (caller)[2];
   $test_label = ($test_label//$exp//"undef") . " (line $lno)";
   @_ = ( $got, $exp, $test_label );
-  #goto &Test::More::is;  # show caller's line number
-  goto &Test2::V0::ok; # show caller's line number
+  goto &Test2::V0::is;  # show caller's line number
 }
 sub is_with_lineno($$;$) { goto &t_is }
 
@@ -428,8 +403,7 @@ sub t_like($$;$) {
   my $lno = (caller)[2];
   $test_label = ($test_label//$exp) . " (line $lno)";
   @_ = ( $got, $exp, $test_label );
-  #goto &Test::More::like;  # show caller's line number
-  goto &Test2::V0::ok; # show caller's line number
+  goto &Test2::V0::like;  # show caller's line number
 }
 sub like_with_lineno($$;$) { goto &t_like }
 
@@ -533,7 +507,7 @@ sub expstr2re($) {
   $re
 }
 
-# mycheck $test_desc, string_or_regex, result
+# check $test_desc, string_or_regex, result
 sub mycheck($$@) {
   my ($desc, $expected_arg, @actual) = @_;
   local $_;  # preserve $1 etc. for caller
@@ -612,9 +586,13 @@ sub insert_loc_in_evalstr($) {
 sub timed_run(&$@) {
   my ($code, $maxcpusecs, @codeargs) = @_;
 
-  eval { require Time::HiRes };
-  my $getcpu = defined(eval{ &Time::HiRes::clock() })
-    ? \&Time::HiRes::clock : sub{ my @t = times; $t[0]+$t[1] };
+  my $getcpu = eval {do{ 
+    require Time::HiRes;
+    () = (&Time::HiRes::clock());
+    \&Time::HiRes::clock;
+  }} // sub{ my @t = times; $t[0]+$t[1] };
+  dprint("Note: $@") if $@;
+  $@ = ""; # avoid triggering "Eval error" in mycheck();
 
   my $startclock = &$getcpu();
   my (@result, $result);

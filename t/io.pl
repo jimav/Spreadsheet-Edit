@@ -45,7 +45,7 @@ sub doread($$) {
   sheet undef;
   eq_deeply(sheet(), undef) or die "sheet() did not return undef";
   eq_deeply(eval{$num_cols},undef) or die "num_cols unexpectedly valid";
-  read_spreadsheet {debug => 0, %$opts}, $inpath;
+  read_spreadsheet {debug => $debug, verbose => $verbose, %$opts}, $inpath;
   die "num_cols is not positive" unless $num_cols > 0;
 }
 # Test the various ways of specifying a sheet name
@@ -55,17 +55,17 @@ doread({sheetname => "Sheet1"}, $input_xlsx_path."!Sheet1"); verif_Sheet1;
 doread({sheetname => "Another Sheet"}, $input_xlsx_path."!Another Sheet"); verif_Another_Sheet;
 
 # Confirm that conflicting specs are caught
-eval{ read_spreadsheet {sheetname => "Sheet1"}, $input_xlsx_path."!Another Sheet" };
+eval{ read_spreadsheet {sheetname => "Sheet1", verbose => $verbose}, $input_xlsx_path."!Another Sheet" };
 die "Conflicting sheetname opt and !suffix not caught" if $@ eq "";
 
 # Extract all sheets
 my $dirpath = mytempdir();
 convert_spreadsheet(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path,
-                    cvt_to => "csv");
+                    cvt_to => "csv", verbose => $verbose);
 for my $fname ("Sheet1.csv", "Another Sheet.csv") {
   die "$fname was not produced" unless -r catfile($dirpath, $fname);
 }
-read_spreadsheet catfile($dirpath,"Sheet1.csv");
+read_spreadsheet {verbose => $verbose}, catfile($dirpath,"Sheet1.csv");
 verif_Sheet1 "(extracted csv)";
 
 say "Done." unless $silent;

@@ -30,7 +30,7 @@ sub import {
 #use Data::Dumper::Interp; say visnew->Objects(0)->dvis('###Preload GOT $sh');
 
   # Tie variables in the caller's package
-  $sh->tie_column_vars({package => $callpkg}, ':all');
+  $sh->tie_column_vars({package => $callpkg}, ':all', ':safe');
 
   # Make it the 'current sheet' in the caller's package
   Spreadsheet::Edit::sheet( {package => $callpkg}, $sh );
@@ -44,7 +44,7 @@ __END__
 
 =head1 NAME
 
-Text::Csv::Edit::Preload - load and auto-import column variables
+Spreadsheet::Edit::Preload - load and auto-import column variables
 
 =head1 SYNOPSIS
 
@@ -55,7 +55,7 @@ Text::Csv::Edit::Preload - load and auto-import column variables
 
   apply {
     say "row ",($rx+1)," has $FIRST_NAME $LAST_NAME";
-  }
+  };
 
   say "Row 4, column B contains ", $rows[3]{B};
   say "Row 4: "First Name" is ", $rows[3]{"First Name"};
@@ -84,7 +84,7 @@ You need not (and may not) explicitly declare the tied variables.
 =head1 OPTIONS
 
 The {OPTIONS} hashref is optional and may specify a workbook sheetname,
-CSV parsing options, etc. (see documentation for C<read_spreadsheet>).
+CSV parsing options, etc. (see I<read_spreadsheet> in L<Spreadsheet::Edit>).
 
    title_rx => ROWINDEX
 
@@ -93,11 +93,10 @@ specified, the title row is auto-detected.
 
 =head1 SECURITY
 
-If a title, or the identifier derived from the title, would clash with a
-variable which already exists in the caller's package or in package main, 
-then a fatal error occurs. 
-
-**NOTE December 2022: REVISIT THIS to ensure that this is actually still safe.  Should the currently-undocumented :safe option be used?
+A fatal error occurs if a column letter ('A', 'B' etc.), a title, 
+or identifier derived from the title (any COLSPEC)
+clashes with an object already existing in the caller's package,
+or in package main.
 
 =head1 SEE ALSO
 
