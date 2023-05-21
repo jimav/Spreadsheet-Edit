@@ -28,9 +28,15 @@ sub oops(@) { @_=("\n".__PACKAGE__." oops:\n",@_,"\n"); goto &Carp::confess }
 use File::Temp qw(tempfile tempdir);
 use File::Path qw(make_path remove_tree);
 use File::Copy ();
-use File::Spec::Functions qw(splitpath catpath catdir catfile 
-                             tmpdir devnull abs2rel);
-use File::Basename qw(fileparse basename dirname);
+
+use Path::Tiny qw/path/;
+
+# OBVIATES NEED FOR...
+use File::Spec::Functions qw(catdir catfile tmpdir devnull abs2rel);
+#use File::Basename qw(basename dirname);
+
+
+use File::Which qw/which/;
 use Scalar::Util qw(openhandle);
 use Guard qw(guard scope_guard);
 use Fcntl qw(:flock :seek);
@@ -210,7 +216,8 @@ our @sane_CSV_write_options = (
   auto_diag   => 2,       # die on errors
 );
 
-my $lockfile_path = "/tmp/".__PACKAGE__.".LOCKFILE";
+my $progname = path($0)->basename;
+my $lockfile_path = path(File::Spec->tmpdir)->child(__PACKAGE__.".LOCKFILE")->stringify;
 
 my %Saved_Sigs;
 sub _sighandler {
@@ -231,31 +238,32 @@ sub _signals_guard() {
   return guard { @SIG{keys %Saved_Sigs} = (values %Saved_Sigs) }
 }
 
-# progname and/or path may be a [sublist], and the first one found is returned
-sub _find_prog($$) {
-  my ($names, $paths) = @_;
-  $names = [$names] unless ref $names;
-  $paths = [$paths] unless ref $paths;
-  foreach my $dir (map {split /:/} grep{defined} @$paths) {
-    foreach my $name (@$names) {
-      return "$dir/$name" if -x "$dir/$name";
-    }
-  }
-  return undef;
-}
-sub _openlibre_path() {  # "/path/to/executable" or undef if not available
+# Find LibreOffice, or failing that OpenOffice
+sub _openlibre_path() {
   state $answer;
   return $answer if defined($answer);
-  $answer =
-          _find_prog([qw(libreoffice loffice localc)],
-                               $ENV{PATH}) //
-          _find_prog([qw(libreoffice loffice localc soffice scalc)],
-                               [reverse glob "/opt/libreoffice*/program"]) //
-          _find_prog([qw(openoffice ooffice oocalc soffice scalc)],
-                               $ENV{PATH}) //
-          _find_prog([qw(openoffice ooffice oocalc soffice scalc)],
-                               [reverse glob "/opt/openoffice*/program"]) //
-          undef; 
+  my $second_choice;
+  foreach my $short_name (qw(libreoffice loffice localc soffice scalc)) {
+    foreach my $choice (which($short_name)) {
+      # Peek inside the shell script to be sure it is Libre not Open Office
+      local $_ = _slurp_binary_file($choice);
+      return (($answer=$choice)) if /Libre.*Office/;
+      $second_choice //= $choice;
+    }
+  }
+  foreach my $dir (reverse glob "/opt/*[Ll]ibre*[Oo]ffice*/program") {
+    next unless -d $dir;
+    local $ENV{PATH} = $dir;
+    my $choice = which("soffice");
+    return (($answer=$choice)) if $choice;
+  }
+  unless ($second_choice) {
+    foreach my $dir (reverse glob "/opt/*[Oo]pen*[Oo]ffice*/program") {
+      $second_choice = which("soffice");
+    }
+  }
+  return (($answer=$second_choice)) if $second_choice;
+  croak "Can not find LibreOffice or OpenOffice";
 }
 
 sub _runcmd($@) {
@@ -447,8 +455,8 @@ sub _convert_using_openlibre($) {
     # Unique per user.  We use a lockfile to prevent concurrent access,
     # so sharing the profile among all processes is okay. 
     # Measured as 20% faster when re-using an existing profile.
-    my $profile_dir = catfile(File::Spec->tmpdir(),
-                              __PACKAGE__."_${EUID}_LOprofile");
+    my $profile_dir = path(File::Spec->tmpdir)
+                        ->child(__PACKAGE__."_${EUID}_LOprofile");
     mkdir $profile_dir;
     if (! -e $profile_dir) {
       croak "$profile_dir : $!";
@@ -515,26 +523,27 @@ sub _convert_using_openlibre($) {
   if ($opts->{allsheets}) {
     # Rename files to match our API (omit the spreadsheetbasename- prefix)
     oops if $_outdir_is_temp;
-    my $outdir = $opts->{_outdir};
-    foreach my $orig (_slurp_directory($outdir)) {
+    my $outdir = path $opts->{_outdir};
+    foreach my $orig (map{$_->basename} $outdir->children) {
       next if $opts->{existing_in_outpath}->{$orig};
-      (my $new = $orig) =~ s/^$opts->{basename}-// or oops dvis '$orig $opts';
-      my $orig_path = catfile($outdir,$orig);
-      my $new_path  = catfile($outdir,$new);
+      (my $new = $orig) =~ s/^$opts->{basename}-// or oops dvis '$orig $opts->{basename}';
+      my $orig_path = $outdir->child($orig);
+      my $new_path  = $outdir->child($new);
       _warn ">> Renaming $orig_path -> $new\n" if $opts->{debug};
       File::Copy::move($orig_path, $new_path) or oops "$!";
     }
   } else {
     # Move the output file to the desired destination
     oops unless $_outdir_is_temp;
-    my $thefile = catfile($opts->{_outdir},"$opts->{basename}.$opts->{cvt_to}");
-    unless (-e $thefile) {
+    my $thefile = path($opts->{_outdir})->child("$opts->{basename}.$opts->{cvt_to}");
+    unless ($thefile->exists) {
       system "set -x; ls -la ".qsh($opts->{_outdir})." >&2"; 
       oops "Expected file not found: ",qsh($thefile);
     }
     File::Copy::move($thefile, $opts->{outpath})
       or die "move to ", _fmt_dirish($opts->{outpath})," failed: $!";
     _warn ">> Removing temp dir ",qsh($opts->{_outdir}),"\n" if $opts->{debug};
+    path($opts->{_outdir})->remove_tree;
     remove_tree($opts->{_outdir});
   }
 
@@ -549,7 +558,7 @@ sub _convert_using_gnumeric($) {  # use ssconvert
     { oops "missing opts->{$_}" unless exists $opts->{$_} }
 
   my $eff_outpath = $opts->{outpath};
-  if (my $prog=_find_prog("ssconvert", $ENV{PATH})) {
+  if (my $prog=which("ssconvert")) {
     my $enc = _get_encodings_from_opts($opts);
     $enc //= "UTF-8"; # default
     my @options;
@@ -576,6 +585,7 @@ sub _convert_using_gnumeric($) {  # use ssconvert
         # the "current" sheet by default; now all sheets are concatenated!
         # See https://gitlab.gnome.org/GNOME/gnumeric/issues/461
         # ssconvert verison 1.12.45 supports a new "-O active-sheet=y" option
+  ## PORTABILITY BUG: Redirection syntax will not work on windows
         my ($ssver) = (qx/ssconvert --version 2>&1/ =~ /ssconvert version '?(\d[\d\.]*)/);
         if (version::is_lax($ssver) && version->parse($ssver) >= v1.12.45) {
           push @dashO_terms, "active-sheet=y";
@@ -648,19 +658,13 @@ sub _convert_using_gnumeric($) {  # use ssconvert
 sub sheetname_from_spec($) {
   my $spec = shift;
   local $_;
-  (my $volume, my $dirs, $_) = splitpath($spec); # $_ = basename
-  my ($base, $sheetname) = (/^(.+)\|\|\|([^\/]+)$/); # path|||sheetname
-  if (! defined $sheetname) {
-    ($base, $sheetname) = (/^(.+)\!([^\/]+)$/);      # path!sheetname
-  }
-  if (! defined $sheetname) {
-    ($base, $sheetname) = (/^(.+)\[([^\[\]]+)\]$/);  # path[sheetname]
-  }
-  if (! defined $sheetname) {
-    $base = $_;
-  }
-  wantarray ? (catpath($volume,$dirs,$base), $sheetname) 
-            : $sheetname
+  my $p = path($spec);
+  my $parent = $p->parent;
+  my ($base,$sn) = ($p->basename =~ /^(.*) (?| \|\|\|([^\!\[\|]+)$
+                                             | \!([^\!\[\|]+)$
+                                             | \[([^\[\]]+)\]$
+                                           )/x);
+  wantarray ? ($parent->child($base//$p->basename)->stringify, $sn) : $sn
 }
 sub filepath_from_spec($) {
   my ($path, undef) = sheetname_from_spec($_[0]);
@@ -822,22 +826,17 @@ u           "   $key_with_sn is ", qsh($opts{$key_with_sn}),"\n"
 sub _detect_to_from($) { # updates %$opts and returns the effective inpath
   my $opts = shift;
   unless ($opts->{cvt_to}) {
-    if ($opts->{outpath}) {
-      my ($ofbase, $odir, $osuffix) = fileparse($opts->{outpath}, qr/\.[^.]+/);
-      if ($osuffix) {
-        $opts->{cvt_to} ||= substr($osuffix,1) # sans dot
-      }
+    if ($opts->{outpath} && $opts->{outpath} =~ /\.([&.]+)$/) {
+      $opts->{cvt_to} = $1;
     }
     croak "cvt_to was not specified and can not be intuited from outpath"
       ,dvis('\n### $opts')  ###TEMP
       unless $opts->{cvt_to};
   }
-  unless ($opts->{cvt_from} || ! $opts->{inpath_sans_sheet}) {
-    my ($ifbase, $idir, $isuffix) 
-      = fileparse(filepath_from_spec($opts->{inpath_sans_sheet}), qr/\.[^.]+/);
-    if ($isuffix) {
-      $isuffix =~ s/^\.txt$/.csv/i;
-      $opts->{cvt_from} ||= substr($isuffix,1) # sans dot
+  unless ($opts->{cvt_from}) {
+    if ($opts->{inpath_sans_sheet} && $opts->{inpath_sans_sheet} =~ /\.([&.]+)$/) {
+      $opts->{cvt_from} = $1;
+      $opts->{cvt_from} =~ s/^\.txt$/.csv/i;
     }
   }
   my $eff_inpath = $opts->{inpath_sans_sheet};
@@ -976,8 +975,8 @@ sub convert_spreadsheet(@) {
 #warn dvis '# # #AAA $eff_inpath\n%opts';
 
   my $inpathish = $opts{inpath_sans_sheet} // $opts{inpath}; 
-  { my ($ifbase, undef, undef) = fileparse($inpathish , qr/\.[^.]+/);
-    # If inpath is a file handle it will stringify like "GLOB(0xabcdef...)"
+  { my $ifbase = path($inpathish)->basename(qr/\.[^.]+/);
+    # If inpathish is a file handle it will stringify like "GLOB(0xabcdef...)"
     $ifbase =~ s/[^-.,;= \w]/_/g; # make it acceptable as part of a filename
     $opts{basename} = $ifbase;
   }
@@ -1033,7 +1032,7 @@ sub convert_spreadsheet(@) {
     elsif ($opts{allsheets}) {
       if ($opts{cvt_to} eq "csv") {
         my $linktarget = abs2rel($eff_inpath, $opts{outpath});
-        my $linkpath = catfile($opts{outpath}, basename($inpathish));
+        my $linkpath = path($opts{outpath})->child(path($inpathish)->basename);
         symlink($linktarget, $linkpath) or croak "symlink $linkpath : $!";
         _warn "  No conversion needed, leaving symlink to input at ", qsh($linkpath),"\n"
           if $opts{verbose};
@@ -1090,7 +1089,7 @@ sub convert_spreadsheet(@) {
       _warn ">> ($$) Waiting for exclusive lock owned by $owner to convert spreadsheet...\n";
       flock($lock_fh, LOCK_EX) or die "flock: $!";
     }
-    print $lock_fh "pid $$ (".basename($0).")\n"; # always appends
+    print $lock_fh "pid $$ ($progname)\n"; # always appends
 
     $opts{use_gnumeric} = 0 if $opts{col_formats}; # must use libreoffice
 
