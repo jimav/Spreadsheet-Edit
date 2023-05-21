@@ -1928,6 +1928,10 @@ sub _autodetect_title_rx {
   my ($title_rx, $rows, $colx, $num_cols, $verbose, $debug) =
      @$$self{qw(title_rx rows colx num_cols verbose debug)};
 
+  if ($#$rows == -1) {
+    return undef; # completely empty
+  }
+
   # Filter out titles which can not be used as a COLSPEC
   my @required_specs = $opthash->{required}
                          ? to_array($opthash->{required}) : ();

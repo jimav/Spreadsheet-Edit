@@ -114,7 +114,7 @@ sub _nearest_call($$) {
     my @frame = caller($lvl);
     confess "No public-API sub found" unless defined($frame[0]);
     my $calling_pkg = $frame[0];
-    my ($called_pkg) = ($frame[3] =~ /^(.*)::/);
+    my ($called_pkg) = ($frame[3] =~ /^(.*)::/) or next; # eval?
     no strict 'refs';
     #if ((!any{ $_ eq $called_pkg } (__PACKAGE__,$calling_pkg,@{$calling_pkg."::CARP_NOT"}))
     if ($called_pkg ne __PACKAGE__ && $callback->($state, \@frame)) {

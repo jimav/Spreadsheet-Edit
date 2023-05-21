@@ -310,7 +310,7 @@ sub _slurp_binary_file($) {
 
 sub _write_binary_tempfile($$) {
   my ($octets, $opts) = @_;
-  confess "EMPTY data!" if length($octets)==0;
+  #confess "EMPTY data!" if length($octets)==0;
   (my $template = $opts->{tempdir}."/".basename($opts->{inpath}))
     =~ s/(?=$|\.\w+$)/_XXXXX/ or oops;
   my ($fh, $tmpfpath) = tempfile($template); # implicitly binmode
@@ -321,7 +321,7 @@ sub _write_binary_tempfile($$) {
     return ($fh, $tmpfpath);
   } else {
     close $fh or die $!;
-    die "$tmpfpath is EMPTY!" unless -s $tmpfpath;
+    die "$tmpfpath is EMPTY!" unless -s $tmpfpath or length($octets)==0;
     return $tmpfpath;
   }
 }
@@ -492,6 +492,16 @@ sub _convert_using_openlibre($) {
 
   $opts->{suppress_stdout} = !$opts->{debug}; # avoid "convert ..." message
   
+  # Arrgh! As of LO 7.5, we get zero exit status even if the input
+  # files do not exist or are not readable.
+  # https://bugs.documentfoundation.org/show_bug.cgi?id=155415
+  unless (-r $opts->{inpath_sans_sheet}) {
+    croak $opts->{inpath_sans_sheet}." is missing or unreadable\n";
+  }
+  if (-e $opts->{_outdir} && ! -w _) {
+    croak $opts->{_outdir}." exists but is not writable\n";
+  }
+
   my $cmdstatus = _runcmd($opts, @cmd);
 
   if ($cmdstatus != 0) {
@@ -1071,8 +1081,13 @@ sub convert_spreadsheet(@) {
     if (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
       seek($lock_fh,0,0) or die;
       (my $owner = do{ local $/; <$lock_fh> }) =~ s/\s*\z//s;
-      _warn ">> ($$) Waiting for exclusive lock (owned by ",
-                   u($owner),") to convert spreadsheet...\n";
+      {
+        last unless $owner =~ /pid (\d+)/;
+        last unless my @s = stat("/proc/$1");
+        last unless my @pw = getpwuid($s[4]);
+        $owner = $pw[0]." ".$owner; # user name
+      }
+      _warn ">> ($$) Waiting for exclusive lock owned by $owner to convert spreadsheet...\n";
       flock($lock_fh, LOCK_EX) or die "flock: $!";
     }
     print $lock_fh "pid $$ (".basename($0).")\n"; # always appends

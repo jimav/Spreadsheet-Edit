@@ -9,9 +9,11 @@
 #   Everything not specifically test-related is in the separate
 #   module t_Common (which is not necessairly just for tests).
 #
-#   Sets default encode/decode to UTF-8 for all file handles.
-#   (this must be done before Test::More is loaded to avoid problems).
-#   Then loads Test::More into your module.
+#   Loads Test2::V0, which sets UTF-8 encoding/decoding for all file handles
+#   (and imports 'utf8').
+#
+#   warnings are *not* imported, to avoid clobbering 'no warnings ...'
+#   settings done beforehand (e.g. via t_Common).
 #
 #   If @ARGV contains -d etc. those options are removed from @ARGV
 #   and the corresponding globals are set: $debug, $verbose, $silent
@@ -34,13 +36,12 @@ use v5.16; # must have PerlIO for in-memory files for ':silent';
 
 use Carp;
 BEGIN{
-  # Unicode support
-  # This must be done before loading Test::More or Test2 to be effective
   confess "Test::More already loaded!" if defined( &Test::More::ok );
   confess "Test2::V0 already loaded!" if defined( &Test2::V0::import );
 
-  # Maybe we should just call binmode(encoding...) on STDOUT & STDERR?
-  use open IO => ':encoding(UTF-8)', ':std';
+  # Now redundant with Test2::V0
+  ## Maybe we should just call binmode(encoding...) on STDOUT & STDERR?
+  #use open IO => ':encoding(UTF-8)', ':std';
 
   # Disable buffering
   STDERR->autoflush(1);
@@ -118,12 +119,13 @@ sub import {
   # (prevents corrupting $!/ERRNO in subsequent tests)
   eval '$[' // die;
 
+  # Test2::V0
+  #  Do not import warnings, to avoid un-doing prior settings.
   #  Do not inport 1- and 2- or 3- character upper-case names, which are 
   #  likely to clash with user variables and/or spreadsheet column letters
-  #  (when using Spreadsheet::Edit).  Test2::Tools::Compare documents some 
-  #  of these ("QUICK CHECKS") as not be exported by default, but they are 
-  #  by default re-exported by Test2::V0 anyway.
+  #  (when using Spreadsheet::Edit).
   Test2::V0->import::into($target,
+    -no_warnings => 1,
     (map{ "!$_" } "A".."AAZ")
   );
 
@@ -171,8 +173,13 @@ sub string_to_tempfile($@) {
 # Run a Perl script in a sub-process.
 # Plain 'system  path/to/script.pl' does not work in a test environment
 # where the correct Perl executable is not at the front of PATH,
-# and also where -I options might supply library paths.
-# This is usually enclosed in Capture { ... }
+# and also where -I options might have supplied library paths.
+#
+# This is usually enclosed in Tiny::Capture::capture { ... }
+#    ==> IMPORTANT: Be sure STDOUT/ERR has :encoding(...) set beforehand
+#        because Tiny::Capture will decode captured output the same way.
+#        Otherwise wide chars will be corrupted
+#
 sub run_perlscript(@) {
   my @perlargs = @_;  # might be ('-e', 'perlcode...')
   unshift @perlargs, "-MCarp=verbose" if $Carp::Verbose;
