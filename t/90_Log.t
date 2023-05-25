@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+
 use FindBin qw($Bin);
 use lib $Bin;
 use t_Common qw/oops/; # strict, warnings, Carp
@@ -74,6 +74,8 @@ sub checklog(&$;$$) {
   goto &Test2::V0::like;  # show caller's line number
 }
 
+#### Test nearest_call & abbrev_call_fn_ln_subname used directly ####
+
 sub _inner {
   my ($pkg,$fn,$lno,$subname) = @{ nearest_call() };
   my @abbr = abbrev_call_fn_ln_subname();
@@ -87,6 +89,7 @@ sub foo {
 }
 checklog { &interm } '"main" '.__LINE__.' "main::interm" abbrev=("'.basename(__FILE__).'",'.__LINE__.',"interm")',"nerest_call() / abbrev_call_fn_ln_subname","NOHEAD";
 
+#### Test log_call using our custom fmt_object callback ####
 
 checklog { $obj->meth_noretval; } qr/Inner.*\[red\].meth_noretval/ ;
 checklog { $obj2->meth_noretval } qr/Inner.*\[blue\].meth_noretval/ ;
@@ -100,6 +103,14 @@ checklog { $obj->meth_1retval("two", "args") } '.meth_1retval "two","args" ==> 4
 
 # log_call \@_, [\"z:",\"","ab",\"ccc",\"",99,{aaa=>100},\"there it was",99];
 checklog { &Inner::func1("directcall") } 'func1 "directcall" ==> z:,"ab"ccc,99,{aaa => 100}there it was99' ;
+
+#### Test log_call using the fallback default fmt_object ####
+delete $Inner::SpreadsheetEdit_Log_Options{fmt_object};
+
+my $obj_xx = Outer->new("purple");
+checklog { $obj_xx->meth_noretval; } qr/<\d{3,}:[\da-fA-F]{3,}>\.meth_noretval/;
+checklog { $obj_xx->meth_noretval; } qr/\.meth_noretval/;
+checklog { $obj2->meth_1retval; } qr/<\d{3,}:[\da-fA-F]{3,}>\.meth_1retval\(\) ==> 42/;
 
 done_testing();
 exit 0;

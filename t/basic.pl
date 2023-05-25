@@ -2,14 +2,13 @@
 # *** DO NOT USE Test2 FEATURES becuase this is a sub-script ***
 use FindBin qw($Bin);
 use lib $Bin;
-use t_Common qw/oops mytempfile mytempdir/; # strict, warnings, Carp etc.
+use t_Common qw/oops/; # strict, warnings, Carp etc.
 use t_TestCommon  # Test::More etc.
          qw/$verbose $silent $debug dprint dprintf
             bug mycheckeq_literal expect1 mycheck 
             verif_no_internals_mentioned
             insert_loc_in_evalstr verif_eval_err
             arrays_eq hash_subset
-            string_to_tempfile
             @quotes/;
 use t_SSUtils;
 use Capture::Tiny qw/capture_merged tee_merged/;
@@ -423,7 +422,7 @@ die dvis '$expected_rx' unless $expected_rx == 7;
 # Can't auto-detect because it would skip the title row due to the empty title
 title_rx 1;
 
-{ my $s=sheet(); dprint dvis('After reading $inpath\n   $$s->{rows}\n   $$s->{colx_desc}\n'); }
+{ my $s=sheet(); dprint dvis('After reading $inpath->stringify\n   $$s->{rows}\n   $$s->{colx_desc}\n'); }
 
 
 alias Aalias => '^';
@@ -918,7 +917,7 @@ foreach ([f => 0], [flt => 0, f => 1, flt => undef], [lt => $#rows],
     my $sheet2 = $Spreadsheet::Edit::pkg2currsheet{"".__PACKAGE__};
 
 #-----------------------------------
-    my $inpath2 = string_to_tempfile(<<'EOF', "in2_XXXXX.csv");
+    (my $inpath2 = Path::Tiny->tempfile("in2_XXXXX", SUFFIX=>".csv"))->spew(<<'EOF');
 TitleP,TitleQ,,TitleS,TitleT
 P1,Q1,R1,S1,T1,U1
 P2,Q2,R2,S2,T2,U2

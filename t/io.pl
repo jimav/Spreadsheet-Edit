@@ -2,7 +2,7 @@
 # *** DO NOT USE Test2 FEATURES becuase this is a sub-script ***
 use FindBin qw($Bin);
 use lib $Bin;
-use t_Common qw/oops mytempfile mytempdir/; # strict, warnings, Carp etc.
+use t_Common qw/oops/; # strict, warnings, Carp etc.
 
 use t_TestCommon  # Test::More etc.
          qw/$verbose $silent $debug dprint dprintf
@@ -10,7 +10,6 @@ use t_TestCommon  # Test::More etc.
             verif_no_internals_mentioned
             insert_loc_in_evalstr verif_eval_err
             arrays_eq hash_subset
-            string_to_tempfile
             @quotes/;
 
 use t_SSUtils;
@@ -20,6 +19,15 @@ use Spreadsheet::Edit qw/:all logmsg fmt_sheet cx2let let2cx sheet/;
 use Spreadsheet::Edit::IO qw/convert_spreadsheet/;
 
 use Test::Deep::NoTest qw/eq_deeply/;
+
+{ my $path = eval{ Spreadsheet::Edit::IO::_openlibre_path() };
+  if (!$path && $@ =~ /not find.*Libre/i) {
+    say __FILE__,": Skipping all because LibreOffice is not installed";
+    exit 0
+  }
+  die "$@ " if $@;
+  say "Using $path" unless $silent;
+}
 
 my $cwd = fastgetcwd;
 my $input_xlsx_path = abs2rel(fast_abs_path("$Bin/../tlib/Test.xlsx"), $cwd);
@@ -59,13 +67,14 @@ eval{ read_spreadsheet {sheetname => "Sheet1", verbose => $verbose}, $input_xlsx
 die "Conflicting sheetname opt and !suffix not caught" if $@ eq "";
 
 # Extract all sheets
-my $dirpath = mytempdir();
-convert_spreadsheet(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path,
-                    cvt_to => "csv", verbose => $verbose);
-for my $fname ("Sheet1.csv", "Another Sheet.csv") {
-  die "$fname was not produced" unless -r catfile($dirpath, $fname);
-}
-read_spreadsheet {verbose => $verbose}, catfile($dirpath,"Sheet1.csv");
+my $dirpath = Path::Tiny->tempdir;
+convert_spreadsheet(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path, cvt_to => "csv", verbose => $verbose, debug => $debug);
+say dvis '###BBB $dirpath ->children : ',avis($dirpath->children) if $debug;
+my $got = [sort map{$_->basename} $dirpath->children];
+my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
+eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
+
+read_spreadsheet {verbose => $verbose}, $dirpath->child("Sheet1.csv");
 verif_Sheet1 "(extracted csv)";
 
 say "Done." unless $silent;

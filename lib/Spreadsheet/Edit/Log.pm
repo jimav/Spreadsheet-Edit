@@ -26,7 +26,10 @@ use Data::Dumper::Interp qw/dvis vis visq avis hvis visnew addrvis u/;
 my %backup_defaults = (
   logdest         => \*STDERR, 
   is_public_api   => sub{ $_[1][3] =~ /(?:::|^)[a-z][^:]*$/ },
-  fmt_object      => sub{ addrvis($_[1]) },
+
+  #fmt_object      => sub{ addrvis($_[1]) },
+  # Just show the address, sans class::name.  Note addrvis now wraps it in <...>
+  fmt_object      => sub{ addrvis(refaddr($_[1])) },
 );
 
 # Return ref to hash of effective options (READ-ONLY).
@@ -160,7 +163,7 @@ sub _fmt_call($;$$) {
   if (defined(my $obj = $opts->{self})) {
     # N.B. "self" might not be a ref, or might be unblessed
     if (! myequal($obj, $prev_obj)) {
-      # Show the object in only the first of a sequence of calls
+      # Show the obj address in only the first of a sequence of calls
       # with the same object.
       my $rep = $opts->{fmt_object}->($state, $obj);
       if (defined($rep) && refaddr($rep)) {

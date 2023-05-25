@@ -25,24 +25,27 @@ our @EXPORT_OK = qw(@sane_CSV_read_options @sane_CSV_write_options
 use version ();
 use Carp;
 sub oops(@) { @_=("\n".__PACKAGE__." oops:\n",@_,"\n"); goto &Carp::confess }
+sub btw(@) { local $_=join("",@_); s/\n\z//s; warn((caller(0))[2].": $_\n"); }
 use File::Temp qw(tempfile tempdir);
 use File::Path qw(make_path remove_tree);
 use File::Copy ();
 
 use Path::Tiny qw/path/;
 
-# OBVIATES NEED FOR...
+# Path::Tiny OBVIATES NEED FOR all but these...
 use File::Spec::Functions qw(catdir catfile tmpdir devnull abs2rel);
-#use File::Basename qw(basename dirname);
 
+# Still sometimes convenient...
+use File::Basename qw(basename dirname);
 
 use File::Which qw/which/;
-use Scalar::Util qw(openhandle);
+use Scalar::Util qw(openhandle blessed);
 use Guard qw(guard scope_guard);
 use Fcntl qw(:flock :seek);
 use Encode qw(decode);
 # DDI 5.015 is needed for 'qshlist'
 use Data::Dumper::Interp qw/vis visq dvis ivis qsh qshlist u/;
+use File::Glob ':bsd_glob';
 
 use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall/;
 our %SpreadsheetEdit_Log_Options = (
@@ -164,14 +167,6 @@ sub _name2LOcharsetnum($) {
 
 sub _is_seekable($) { my $fh = shift; seek($fh, tell($fh), SEEK_SET) }
 
-sub _warn(@) { # avoid __WARN__ traps
-  print STDERR @_;
-  if (@_==0 || substr($_[-1],-1) ne "\n") {
-    my ($file, $lno) = (caller)[1,2];
-    print STDERR " at $file line $lno\n";
-  }
-}
-
 # convert between 0-based index and spreadsheet column letter code.
 # Default argument is $_
 sub cx2let(_) {
@@ -188,7 +183,7 @@ sub let2cx(_) {
   }
   return $n;
 }
-=for Pod::Coverage cxrx2sheetaddr oops
+=for Pod::Coverage cxrx2sheetaddr oops btw
 =cut
 sub cxrx2sheetaddr($$) { # (1,99) -> "B100"
   my ($cx, $rx) = @_;
@@ -224,7 +219,7 @@ sub _sighandler {
   if (! $Saved_Sigs{$_[0]} or $Saved_Sigs{$_[0]} eq 'DEFAULT') {
     # The user isn't catching this, so the process will abort without
     # running destructors: Call exit instead
-    _warn "($$)".__PACKAGE__." caught signal $_[0], exiting\n";
+    warn "($$)".__PACKAGE__." caught signal $_[0], exiting\n";
     Carp::cluck "($$)".__PACKAGE__." caught signal $_[0], exiting\n";
     exit 1;
   }
@@ -240,36 +235,90 @@ sub _signals_guard() {
 
 # Find LibreOffice, or failing that OpenOffice
 sub _openlibre_path() {
-  state $answer;
-  return $answer if defined($answer);
-  my $second_choice;
-  foreach my $short_name (qw(libreoffice loffice localc soffice scalc)) {
-    foreach my $choice (which($short_name)) {
-      # Peek inside the shell script to be sure it is Libre not Open Office
-      local $_ = _slurp_binary_file($choice);
-      return (($answer=$choice)) if /Libre.*Office/;
-      $second_choice //= $choice;
-    }
+  state $answer = $ENV{SPREADSHEET_EDIT_LOPATH};
+  return $answer if $answer;
+  foreach my $short_name (qw(libreoffice loffice localc)) {
+    if ($answer = which($short_name)) { return $answer }
   }
-  foreach my $dir (reverse glob "/opt/*[Ll]ibre*[Oo]ffice*/program") {
-    next unless -d $dir;
-    local $ENV{PATH} = $dir;
-    my $choice = which("soffice");
-    return (($answer=$choice)) if $choice;
+  # Search for "isolated" LibreOffice (or OO) installations, which are
+  # the result of unpacking from a .deb or other archive into a non-standard 
+  # location.  The resulting structure is
+  #    <somedir>/opt/{libreoffice,openoffice}*/program/soffice
+
+  # I tried File::Glob::bsd_glob('/*/*/*/opt/libre*/program') but it failed for
+  # unknown reasons even though the same glob works from the shell.  
+  # Hence this:
+  my sub _cmp_subpaths($$) {
+    my ($sp1, $sp2) = @_;
+    oops     if !defined($sp1);
+    return 1 if !defined($sp2);
+    # Use longest version in the (sub-)path, e.g. "4.4.1/opt/openoffice4/..."
+    my (@v1) = sort { length($a) <=> length($b) } ($sp1 =~ /(\d[.\d]*)/g);
+    my (@v2) = sort { length($a) <=> length($b) } ($sp2 =~ /(\d[.\d]*)/g);
+    ($v1[-1]//0) <=> ($v2[-1]//0)
   }
-  unless ($second_choice) {
-    foreach my $dir (reverse glob "/opt/*[Oo]pen*[Oo]ffice*/program") {
-      $second_choice = which("soffice");
-    }
-  }
-  return (($answer=$second_choice)) if $second_choice;
+  my ($lo_path, $lo_subpath);
+  my ($oo_path, $oo_subpath);
+  File::Find::find(
+    { wanted => sub{
+        # Undef fullname OR invalid "_" filehandle implies a broken symlink, 
+        #   see https://github.com/Perl/perl5/issues/21122
+        # Zero size implies /proc or something else we should not enter.
+        # File::Find::fullname unreadable implies followed link to inaccessable 
+        #   (The initial "_" stat is invalid, so we can't check -l _)
+        $! = 0;
+        if (
+            !defined($File::Find::fullname) # broken link, per docs
+            || (! -r _) || (! -x _) # unreadable item or invalid "_" handle
+                                 # https://github.com/Perl/perl5/issues/21122
+            || (stat(_))[7] == 0 # zero size ==> /proc or something; ignore
+            || ! -r $File::Find::fullname # presumably a symlink to unreadable
+            || ! -x _                     # or unsearchable dir
+           ) {
+          $File::Find::prune = 1;
+          return 
+        }
+        return unless -d _;
+        # Look for   /*/<unpackrootdir>/opt/libreofficeXXX/program/
+        #             1        2         3     4             5
+        #   or     /*/*/<unpackrootdir>/opt/libreofficeXXX/program/
+        #           1 2        3         4     5             6
+        my $depth = scalar(() = m#(/)#g);
+        if ($depth > 4) {
+          $File::Find::prune = 1; 
+          return;
+        }
+        if (basename($_) eq "opt") {
+          my $subpath = path($_)->parent->realpath->stringify;
+          my $path;
+          if ($path = bsd_glob "$_/libre*/program/soffice") {
+            if (_cmp_subpaths($subpath, $lo_subpath) >= 0) {
+              ($lo_path, $lo_subpath) = ($path, $subpath);
+            }
+          }
+          elsif ($path = bsd_glob "$_/open*/program/soffice") {
+            if (_cmp_subpaths($subpath, $oo_subpath) >= 0) {
+              ($oo_path, $oo_subpath) = ($path, $subpath);
+            }
+          }
+        }
+      }, 
+      follow_fast => 1,
+      follow_skip => 2,
+      dangling_symlinks => 0,
+      no_chdir => 1
+    },
+    "/", (defined($ENV{HOME}) ? $ENV{HOME} : ())
+  );
+  return (($answer = $lo_path)) if $lo_path;
+  return (($answer = $oo_path)) if $oo_path;
   croak "Can not find LibreOffice or OpenOffice";
-}
+}#_openlibre_path
 
 sub _runcmd($@) {
   my ($opts, @cmd) = @_;
   my $guard = _signals_guard;
-  _warn "> ",join(" ", map{qsh} @cmd),"\n" if $opts->{verbose};
+  warn "> ",join(" ", map{qsh} @cmd),"\n" if $opts->{verbose};
   my $pid = fork;
   if ($pid == 0) { # CHILD
     ##if ($opts->{stdout_to_stderr}) {
@@ -286,7 +335,7 @@ sub _runcmd($@) {
   }
   waitpid($pid,0);
   my $r = $?;
-  _warn "(wait status=$r)\n" if $opts->{verbose};
+  warn "(wait status=$r)\n" if $opts->{verbose};
   return $r;
 }
 
@@ -296,10 +345,40 @@ sub _fmt_dirish($) {
   -d $path ? catfile($path,"...") : $path
 }
 
-sub _slurp_directory($) {
-  opendir my $dh, $_[0] or confess "opendir $_[0] : $!";
-  my @result = grep{ $_ ne File::Spec->curdir() && $_ ne File::Spec->updir() }
-               readdir($dh);
+# Create a temporary sub-dir of {tempdir} preferably with the given basename,
+# but if that name already exists then use a randomized name; this might
+# happen when {tempdir} is re-used.
+sub _mk_tempsubdir($$) { # does mkdir and returns path
+  my ($opts, $namehint) = @_;
+  my $basename = path($namehint || oops)->basename;
+  my $path = catdir($opts->{tempdir}, $basename);
+  if (mkdir $path) {
+    return $path;
+  }
+  my ($base,$suf) = ($basename =~ /^(.*?)((?:\.\w+)?)$/);
+  $path = File::Temp::tempfile(DIR => $opts->{tempdir},
+                               TEMPLATE => $base."_XXXXX", 
+                               SUFFIX => $suf, CLEANUP => 0)
+    or oops $!;
+  oops($path) unless $path =~ /^\Q$opts->{tempdir}\E\b/;
+
+  btw ">> mkdir $path (namehint=$namehint)" if $opts->{debug};
+  $path
+}
+sub _temp_filename ($$) { # returns a *momentarily* nonexistent file path
+  my ($opts, $namehint) = @_;
+  my $basename = path($namehint || oops)->basename;
+  my $path = catdir($opts->{tempdir}, $basename);
+  if (! -e $path) {
+    return $path;
+  }
+  my ($base,$suf) = ($basename =~ /^(.*?)((?:\.\w+)?)$/);
+  (undef,$path) = File::Temp::tempfile(DIR => $opts->{tempdir},
+                                       TEMPLATE => $base."_XXXXX", 
+                                       SUFFIX => $suf, UNLINK => 0);
+  oops($path) unless $path =~ /^\Q$opts->{tempdir}\E\b/;
+  btw ">> temp_filename $path (namehint=$namehint)" if $opts->{debug};
+  $path
 }
 
 sub _slurp_binary_file($) {
@@ -310,28 +389,19 @@ sub _slurp_binary_file($) {
   binmode $fh;  # WARNING: affects arg if *filehandle was passed
   local $/ = undef;
   my $octets = <$fh>;
-  close $fh or die $!;
-  # workaround Perl bug (https://github.com/Perl/perl5/issues/17655
-  my $ignore = $.;
+  unless (openhandle($input)) { 
+    close $fh or die $!;
+  }
   return $octets;
 }
 
 sub _write_binary_tempfile($$) {
   my ($octets, $opts) = @_;
-  #confess "EMPTY data!" if length($octets)==0;
-  (my $template = $opts->{tempdir}."/".basename($opts->{inpath}))
-    =~ s/(?=$|\.\w+$)/_XXXXX/ or oops;
-  my ($fh, $tmpfpath) = tempfile($template); # implicitly binmode
-  #binmode $fh or die $!;
-  print $fh $octets or die $!;
-  if (wantarray) {
-    seek($fh, 0, 0);
-    return ($fh, $tmpfpath);
-  } else {
-    close $fh or die $!;
-    die "$tmpfpath is EMPTY!" unless -s $tmpfpath or length($octets)==0;
-    return $tmpfpath;
-  }
+  # Write to a non-auto-deleted file in {tempdir} based on the {inpath} name.
+  my $path = path(_mk_tempsubdir($opts, $opts->{inpath}));
+WRONG need filename not subdir...
+  $path->spew($octets);
+  $path->stringify;
 }
 
 sub _convert_using_openlibre($) {
@@ -514,7 +584,7 @@ sub _convert_using_openlibre($) {
 
   if ($cmdstatus != 0) {
     if ("@cmd" =~ / -o \/tmp\/out\./ || ($ENV{PWD}//"") eq "/tmp" && "@cmd" =~ / -o (?:\.\/)?out\./) {
-      _warn "**KNOWN unoconv bug causes abort if output file is /tmp/out.* (yes, strange)\n";
+      btw "**KNOWN unoconv bug causes abort if output file is /tmp/out.* (yes, strange)\n";
     }
     croak "($$) Conversion of '$opts->{inpath}' to $outsuf failed\n",
           "(make sure libre/open office is not running)\n"
@@ -529,7 +599,7 @@ sub _convert_using_openlibre($) {
       (my $new = $orig) =~ s/^$opts->{basename}-// or oops dvis '$orig $opts->{basename}';
       my $orig_path = $outdir->child($orig);
       my $new_path  = $outdir->child($new);
-      _warn ">> Renaming $orig_path -> $new\n" if $opts->{debug};
+      btw ">> Renaming $orig_path -> $new\n" if $opts->{debug};
       File::Copy::move($orig_path, $new_path) or oops "$!";
     }
   } else {
@@ -542,7 +612,7 @@ sub _convert_using_openlibre($) {
     }
     File::Copy::move($thefile, $opts->{outpath})
       or die "move to ", _fmt_dirish($opts->{outpath})," failed: $!";
-    _warn ">> Removing temp dir ",qsh($opts->{_outdir}),"\n" if $opts->{debug};
+    btw ">> Removing temp dir ",qsh($opts->{_outdir}),"\n" if $opts->{debug};
     path($opts->{_outdir})->remove_tree;
     remove_tree($opts->{_outdir});
   }
@@ -632,7 +702,7 @@ sub _convert_using_gnumeric($) {  # use ssconvert
       my $failmsg = "($$) Conversion of '$opts->{inpath}' to $eff_outpath failed\n"."cmd: ".qshlist(@cmd)."\n";
       if ($suppress_stderr) {  # repeat showing all output
         if (0 == _runcmd({%$opts, suppress_stderr => 0}, @cmd)) {
-          _warn "Surprise!  Command failed the first time but succeeded on 2nd try!\n";
+          warn "Surprise!  Command failed the first time but succeeded on 2nd try!\n";
         }
         croak $failmsg;
       }
@@ -759,7 +829,7 @@ sub form_spec_with_sheetname($$) {
 #     verbose & debug => as specified
 #   }
 sub _process_args($;@) { # returns (key => value, ...)
-  croak "fix obsolete call to pass linearized options" if ref($_[0]);
+  confess "fix obsolete call to pass linearized options" if ref($_[0]) && !blessed($_[0]);
   my $separate_inpath;
   if (scalar(@_) % 2) { # odd number of args
     # Treat an initial or singular arg as inpath
@@ -813,7 +883,7 @@ u           "   $key_with_sn is ", qsh($opts{$key_with_sn}),"\n"
         if defined($sheet_from_path) && $sheet_from_path ne $opts{sheetname};
     }
     elsif (defined $sheet_from_path) {
-      _warn "(extracted sheet name \"$sheet_from_path\" from $key_with_sn\n"
+      btw "(extracted sheet name \"$sheet_from_path\" from $key_with_sn)\n"
         if $opts{verbose};
       $opts{sheetname} = $sheet_from_path;
     }
@@ -881,7 +951,7 @@ sub _detect_to_from($) { # updates %$opts and returns the effective inpath
         my $min_cols_minus1 = 3 - 1;
         if ($chars =~ /\A(?:.*?,){$min_cols_minus1,}(.*?)[\x{0A}\x{0D}]/s
              or $empty) {
-          _warn "Presuming \"$opts->{inpath}\" contains CSV data\n"
+          warn "Presuming \"$opts->{inpath}\" contains CSV data\n"
             if $opts->{verbose};
           $opts->{cvt_from} = 'csv';
         }
@@ -921,30 +991,31 @@ sub _emulate_by_sheet_name($) {
   # Emulate extracting a single sheet by name by extracting all sheets
   # and discarding all but the one we want
   oops "recursion?" if u($opts{outpath}) =~ /EMULATE/;
-  _warn ">>Emulating extract-by-name by extracting all...\n" 
-    ,dvis('%opts\n') ###TEMP
+  warn ">>Emulating extract-by-name by extracting all...\n" 
     if $opts{verbose};
+  #btw dvis('%opts\n') if $opts{debug};
   my %topts = %opts;
   delete @topts{qw/sheetname inpath_sans_sheet existing_in_outpath/};
   $topts{inpath} = $opts{inpath_sans_sheet} 
     unless openhandle($opts{inpath});
   $topts{allsheets} = 1;
-  $topts{outpath} = catfile($opts{tempdir}, "_EMULATE-BY-NAME");
-  $topts{silent} = 1;
-  $topts{verbose} = $topts{debug} = 0;
-
+  $topts{outpath} = _mk_tempsubdir(\%opts, "_EMULATE-BY-NAME");
+  unless ($opts{debug}) {
+    $topts{silent} = 1;
+    $topts{verbose} = $topts{debug} = 0;
+  }
   my $hash = convert_spreadsheet(%topts) // oops;
 
   my @matches = grep{ /$opts{sheetname}\.csv$/ } 
-                _slurp_directory($topts{outpath});
+                map{$_->basename} path($topts{outpath})->children;
   oops dvis '@matches\n$topts' unless @matches==1;
   my $thepath = catfile($topts{outpath}, $matches[0]);
   $opts{outpath} //= catfile($opts{tempdir}, $matches[0]);
-  _warn ">> move ",qsh($thepath)," -> ",qsh(_fmt_dirish $opts{outpath}),"\n"
+  btw ">> move ",qsh($thepath)," -> ",qsh(_fmt_dirish $opts{outpath}),"\n"
     if $opts{debug};
   File::Copy::move( $thepath, $opts{outpath} )
     or die "move of $thepath failed ($!)";
-  _warn ">> Removing intermediate dir ",qsh($topts{outpath}),"\n" 
+  btw ">> Removing intermediate dir ",qsh($topts{outpath}),"\n" 
     if $opts{debug};
   remove_tree($topts{outpath}) or die "$topts{outpath} : $!";
   $hash->{sheetname} = $opts{sheetname};
@@ -956,23 +1027,49 @@ sub convert_spreadsheet(@) {
   my %opts = &_process_args;
   my %input_opts = %opts;
 
-  _warn dvis('>>> convert_spreadsheet %input_opts\n') if $opts{debug};
+  btw dvis('>>> convert_spreadsheet %input_opts\n') if $opts{debug};
   
   my sub _fmt_outpath_content($) {
     my $outpath = $_[0]->{outpath} // oops;
     return "" unless -d $outpath;
     "\n  outpath contains: "
-           .join(", ",map{qsh} _slurp_directory($outpath));
+           .join(", ",map{qsh basename $_} path($outpath)->children);
   }
 
   # FIXME sorta-BUG HERE:
-  #   Should re-use the same tempdir (?) to avoid proliferation if
-  #   many spreadsheets are read by the same process.
-  #   (and/or provide an API to delete previous temp output files)
-  $opts{tempdir} //= File::Temp::tempdir("/tmp/spread_XXXXXX", CLEANUP=>1);
+  #   Should re-use the same tempdir (?) to avoid proliferation of tempdirs
+  #   if many spreadsheets are read by the same process?  We can only remove
+  #   a {tempdir} at process exit because it may contain a result file
+  #   returned in {outpath}.
+  #
+  #   If we re-use the same {tempdir} then must ensure unique generated names!
+  #
+  # RELATED QUESTION:
+  #   Should we return a self-deleting Path::Tiny::tempfile object in outpath?
+  #
+  #$opts{tempdir} //= File::Temp::tempdir("/tmp/spread_XXXXXX", CLEANUP=>1);
+  
+  # Re-use the same tempdir for the duration of this process, to avoid
+  # proliferation when multiple calls are made.  {tempdir} is removed at
+  # process exit unless the user specified {tempdir}.
+  #
+  # THREAD SAFETY: {outpath} should ALWAYS be specified when not using
+  #   the 'allsheets' option, becuase temporary *files* are not atomically
+  #   created and so threads might race (temp *directories* are atomically
+  #   created, so the result of `allsheets` should be thread-safe).
+  #
+  # FIXME: Should we pre-create temp files and then *copy* data into them
+  #   if the underlying utility can't over-write an existing file???
+  #   Or is it better to create a unique temp subdir for the output file
+  #   and return a file in it, or atomically move the file up before rtn or ???
+  #
+  state $tempdir;
+  $opts{tempdir} 
+    //= ($tempdir //= File::Temp::tempdir("/tmp/spread_XXXXXX", CLEANUP=>1));
+  # NOTE: _mk_tempsubdir() and _temp_filename() handle clashes with existing 
 
   my $eff_inpath = _detect_to_from(\%opts); # could be an open fh
-#warn dvis '# # #AAA $eff_inpath\n%opts';
+#btw dvis '# # #AAA $eff_inpath\n%opts';
 
   my $inpathish = $opts{inpath_sans_sheet} // $opts{inpath}; 
   { my $ifbase = path($inpathish)->basename(qr/\.[^.]+/);
@@ -992,7 +1089,7 @@ sub convert_spreadsheet(@) {
     } else {
       mkdir $opts{outpath} or croak "mkdir $opts{outpath} : $!";
     }
-    _warn "> Extracting sheets from $opts{cvt_from} ",qsh($opts{inpath}),
+    warn "> Extracting sheets from $opts{cvt_from} ",qsh($opts{inpath}),
           " into ",qsh($opts{outpath}),"/*.$opts{cvt_to}\n"
       if $opts{verbose};
     $outpath_isdir = 1;
@@ -1001,14 +1098,14 @@ sub convert_spreadsheet(@) {
     $opts{outpath} //= catfile($opts{tempdir}, 
                  ($opts{sheetname} || $opts{basename}).".".$opts{cvt_to});
     # Will store single result inside directory {outpath} if it pre-exists
-    _warn "> Converting $opts{cvt_from} ",
+    warn "> Converting $opts{cvt_from} ",
           qsh(form_spec_with_sheetname($inpathish, $opts{sheetname})),
           " to $opts{cvt_to} ", qsh(_fmt_dirish $opts{outpath}), "\n"
       if $opts{verbose};
   }
   if ($outpath_isdir) {
     $opts{existing_in_outpath} = {
-      map{($_ => 1)} _slurp_directory($opts{outpath}) 
+      map{($_ => 1)} path($opts{outpath})->children
     };
   }
 
@@ -1017,13 +1114,13 @@ sub convert_spreadsheet(@) {
     #   return the input path itself (or a seekable temp copy) as the output
     if (!$opts{allsheets}) {
       if (defined $opts{outpath}) {
-        _warn "  No conversion needed, copying to ", 
+        warn "  No conversion needed, copying to ", 
               qsh(_fmt_dirish $opts{outpath}),"\n"
           if $opts{verbose};
         File::Copy::copy($eff_inpath, $opts{outpath});
       } else {
         $opts{outpath} = $eff_inpath; # possibly a temp copy
-        _warn "  No conversion needed, returning ", qsh($opts{outpath}),"\n"
+        warn "  No conversion needed, returning ", qsh($opts{outpath}),"\n"
           if $opts{verbose};
       }
     }
@@ -1034,7 +1131,7 @@ sub convert_spreadsheet(@) {
         my $linktarget = abs2rel($eff_inpath, $opts{outpath});
         my $linkpath = path($opts{outpath})->child(path($inpathish)->basename);
         symlink($linktarget, $linkpath) or croak "symlink $linkpath : $!";
-        _warn "  No conversion needed, leaving symlink to input at ", qsh($linkpath),"\n"
+        warn "  No conversion needed, leaving symlink to input at ", qsh($linkpath),"\n"
           if $opts{verbose};
       } else {
         croak "{allsheets} not supported with cvt_to=",vis($opts{cvt_to});
@@ -1078,7 +1175,7 @@ sub convert_spreadsheet(@) {
       flock($lock_fh, LOCK_UN) or die "flock UN: $!";
     };
     if (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
-      seek($lock_fh,0,0) or die;
+      seek($lock_fh,0,SEEK_SET) or die;
       (my $owner = do{ local $/; <$lock_fh> }) =~ s/\s*\z//s;
       {
         last unless $owner =~ /pid (\d+)/;
@@ -1086,7 +1183,7 @@ sub convert_spreadsheet(@) {
         last unless my @pw = getpwuid($s[4]);
         $owner = $pw[0]." ".$owner; # user name
       }
-      _warn ">> ($$) Waiting for exclusive lock owned by $owner to convert spreadsheet...\n";
+      warn ">> ($$) Waiting for exclusive lock owned by $owner to convert spreadsheet...\n";
       flock($lock_fh, LOCK_EX) or die "flock: $!";
     }
     print $lock_fh "pid $$ ($progname)\n"; # always appends
@@ -1110,8 +1207,7 @@ sub convert_spreadsheet(@) {
     grep{ defined $opts{$_} }
     qw(inpath sheetname outpath iolayers cvt_from cvt_to verbose debug)
   };
-  log_call [\%input_opts,\"(emulated single-sheet extract)"],
-           [$retval, \_fmt_outpath_content($retval)]
+  log_call [\%input_opts], [$retval, \_fmt_outpath_content($retval)]
     if $opts{verbose};
   $retval;
 }
@@ -1149,10 +1245,10 @@ sub _detect_encoding($$) {
   foreach my $enc (@enclist) {
     eval { decode($enc, $octets, Encode::FB_CROAK|Encode::LEAVE_SRC) };
     if ($@) {
-       _warn "Encoding '$enc' did not work...($@)\n" if $opts->{debug};
+       btw "Encoding '$enc' did not work...($@)\n" if $opts->{debug};
        next;
     }
-    _warn "Encoding '$enc' seems to work.\n" if $opts->{debug};
+    btw "Encoding '$enc' seems to work.\n" if $opts->{debug};
     return $enc;
   }
   croak "None of the encodings \"",join(",",@enclist),"\" are correct!\ninpath: ",qsh($opts->{inpath}),"\n"
@@ -1185,8 +1281,8 @@ sub _update_iolayers($$) {
 
   $opts->{iolayers} =~ s/(^|:)( encoding\([^()]*\) | crlf | raw )//gx;
   $opts->{iolayers} =~ s/^/"${lineend_layer}:encoding($encoding)"/e;
-  _warn "_update_iolayers (l",(caller)[2],") ",
-               "'",u($orig),"' -> '$opts->{iolayers}'\n" if $opts->{verbose};
+  btw "_update_iolayers (l",(caller)[2],") ",
+               "'",u($orig),"' -> '$opts->{iolayers}'\n" if $opts->{debug};
 }
 
 
@@ -1210,6 +1306,7 @@ sub OpenAsCsv {
   #   (massive changes required; in some contexts it must be a path...)
 
   my $inpath = delete $opts{inpath};
+  croak "inpath is a ref! (".ref($inpath).")" if ref($inpath) && !blessed($inpath);
   croak "OpenAsCsv: missing 'inpath' option\n" unless $inpath;
   croak "OpenAsCsv: outpath may not be specified\n" if $opts{outpath};
 
