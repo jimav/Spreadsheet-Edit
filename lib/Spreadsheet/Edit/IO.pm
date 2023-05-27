@@ -399,13 +399,13 @@ sub _runcmd($@) {
   warn "> ",join(" ", map{qsh} @cmd),"\n" if $opts->{verbose};
   my $pid = fork;
   if ($pid == 0) { # CHILD
-    ##if ($opts->{stdout_to_stderr}) {
-    ##  open(STDOUT, ">&STDERR") or croak $!;
-    ##}
     if ($opts->{suppress_stderr}) {
       open(STDERR, ">", devnull()) or croak $!;
     }
-    if ($opts->{suppress_stdout}) {
+    if ($opts->{stdout_to_stderr}) {
+      open(STDOUT, ">&STDERR") or croak $!;
+    }
+    elsif ($opts->{suppress_stdout}) {
       open(STDOUT, ">", devnull()) or croak $!;
     }
     exec(@cmd) or print "### exec failed: $!\n";
@@ -487,7 +487,7 @@ sub _convert_using_openlibre($$) {
   # I think (not certain) that we can only specify the encoding of CSV files,
   # either as input or output;  .xlsx and .ods spreadsheets (which are based
   # on XML) could in principle use any encoding internally, but I'm not sure
-  # we can control that, nor should it matter.
+  # we can control that, nor should anyone ever need to.
 
   # REFERENCES:
   # https://help.libreoffice.org/7.5/en-US/text/shared/guide/start_parameters.html?&DbPAR=SHARED&System=UNIX
@@ -564,7 +564,7 @@ sub _convert_using_openlibre($$) {
       # Token 8: DetectSpecialNumbers"
       .","
       # Token 9: "Save cell contents as shown"
-      .",true"
+      .",".($opts->{raw_values} ? "false" : "true")
       # Token 10: "Export cell formulas"
       .",false"
       # Token 11: not used during export
@@ -602,7 +602,8 @@ sub _convert_using_openlibre($$) {
                     "--outdir", $tdir,
                     $opts->{inpath_sans_sheet});
 
-  $opts->{suppress_stdout} = !$debug; # avoid "convert ..." message
+  $opts->{stdout_to_stderr} = 1;       # send "convert..." message to stderr
+  $opts->{suppress_stderr} = !$debug;  # and suppress it unless tracing
 
   my $cmdstatus = _runcmd($opts, @cmd);
 
@@ -800,7 +801,7 @@ sub form_spec_with_sheetname($$) {
   #$sheetname ? "${filepath}|||${sheetname}" : $filepath
 }
 
-our $default_input_encodings = "UTF-8,windows-1252";
+our $default_input_encodings = "UTF-8,UTF-16BE,UTF-16LE,windows-1252";
 our $default_output_encoding = "UTF-8";
 
 # Return digested %opts setting
@@ -835,9 +836,12 @@ sub _process_args($;@) {
     for my $thiskey ('inpath', 'outpath') {
       my $spec = $opts{$thiskey} || next;
       my ($pssn, $sn) = sheetname_from_spec($spec);
-      croak "Both $thiskey and $key specify a sheetname embedded in path"
-        if $sheetname;
-      ($path_sans_sheet, $sheetname, $key) = ($pssn, $sn, $thiskey);
+      if (defined $sn) {
+        croak "A sheetname is embeeded in both ",
+              "'$thiskey' ($opts{$thiskey}) and '$key' ($opts{$key})\n"
+          if $sheetname;
+        ($path_sans_sheet, $sheetname, $key) = ($pssn, $sn, $thiskey);
+      }
     }
     if ($opts{sheetname}) {
       croak "'sheetname' option conflicts with embedded sheet name\n",
@@ -880,7 +884,7 @@ sub _parse_iolayers($) {
 sub _determine_enc_tofrom($) {
   my $opts = shift;
   unless ($opts->{cvt_to}) {
-    if ($opts->{outpath} && $opts->{outpath} =~ /\.([&.]+)$/) {
+    if ($opts->{outpath} && $opts->{outpath} =~ /\.([^.]+)$/) {
       $opts->{cvt_to} = $1;
     }
     croak "'cvt_to' was not specified and can not be intuited from 'outpath'"
@@ -905,10 +909,10 @@ sub _determine_enc_tofrom($) {
       for my $enc (@enclist) {
         eval { decode($enc, $octets, Encode::FB_CROAK|Encode::LEAVE_SRC) };
         if ($@) {
-           btw "Encoding '$enc' did not work...($@)\n" if $opts->{debug};
+           btw "Input encoding '$enc' did not work...($@)\n" if $opts->{debug};
            next;
         }
-        btw "Encoding '$enc' seems to work.\n" if $opts->{debug};
+        btw "Input encoding '$enc' seems to work.\n" if $opts->{debug};
         @enclist = ($enc);
         last
       }
@@ -979,6 +983,7 @@ sub _extract_one_csv($) {
   $outpath->remove unless -d $outpath;
 
   my $cachedirpath = _cachedir($opts);
+  confess "undef sheetname" unless defined $opts->{sheetname};
   my $fname = $opts->{sheetname}.".csv";
   my $cached_path = $cachedirpath->child($fname);
   if (-e $cached_path) {
@@ -1027,8 +1032,8 @@ sub _final_outpath($) {
 sub convert_spreadsheet(@) {
   # Set inpath_sans_sheet, sheetname, ifbase, etc.
   my %opts = &_process_args;
-  my %input_opts = %opts;
   btw dvis('>>> convert_spreadsheet %opts\n') if $opts{debug};
+  my %input_opts = %opts;
 
   _get_exclusive_lock(\%opts);
   scope_guard { _release_lock(\%opts); };
@@ -1036,7 +1041,8 @@ sub convert_spreadsheet(@) {
   _create_tempdir_if_needed(\%opts);
 
   _determine_enc_tofrom(\%opts); # intuit cvt_from & cvt_to if possible
-  # Now {input_encoding} and {output_encoding} are set
+  my $input_enc = $opts{input_encoding};
+  my $output_enc = $opts{output_encoding};
 
   croak "Either input or output must be 'csv'\n"
     unless $opts{cvt_from} eq 'csv' || $opts{cvt_to} eq 'csv';
@@ -1052,12 +1058,13 @@ sub convert_spreadsheet(@) {
   my $done;
   if ($opts{cvt_from} eq $opts{cvt_to}) {  # csv to csv
     if (!$opts{allsheets}) {
-      if ($opts{input_encoding} ne $opts{output_encoding}) {
+      if ($input_enc ne $output_enc) {
         # Special case #1: in & out are CSVs but different encodings.
-        warn "> Transcoding csv -> csv\n" if $opts{debug};
-        my $octets = $opts{input_sans_sheet}->slurp_raw;
-        my $chars = decode($octets, $opts{input_encoding}, Encode::FB_CROAK);
-        $octets = encode($chars, $opts{output_encoding}, Encode::FB_CROAK);
+        warn "> Transcoding csv $opts{inpath_sans_sheet}:  $input_enc -> $output_enc\n" 
+          if $opts{debug};
+        my $octets = $opts{inpath_sans_sheet}->slurp_raw;
+        my $chars = decode($input_enc, $octets, Encode::FB_CROAK);
+        $octets = encode($output_enc, $chars, Encode::FB_CROAK);
         path(_final_outpath(\%opts))->spew_raw($octets);
         $done = 1;
       } else {
@@ -1080,7 +1087,7 @@ sub convert_spreadsheet(@) {
       # Special case #2: <allsheets> with input already a csv:
       #   Leave a symlink to the input in the <outpath> directory.
       croak "transcoding not impl in this situation"
-        if ($opts{input_encoding} ne $opts{output_encoding});
+        if ($input_enc ne $output_enc);
       my $outpath = path(_final_outpath(\%opts));
       $outpath->mkpath; # nop if exists, croaks if conflicts with file
       my $dest = $outpath->child( $opts{ifbase}.".csv" );
@@ -1105,7 +1112,7 @@ sub convert_spreadsheet(@) {
     }
   }
   my $result = {
-    defined($opts{output_encoding}) ? (encoding => $opts{output_encoding}):(),
+    defined($output_enc) ? (encoding => $output_enc):(),
     inpath_sans_sheet => $opts{inpath_sans_sheet}->stringify,
     (map{ ($_ => $opts{$_}) } grep{ defined $opts{$_} }
         qw/outpath cvt_from cvt_to sheetname/)
@@ -1153,7 +1160,7 @@ sub OpenAsCsv {
     csvpath       => $csvpath,
     inpath        => $inpath,
     (map{ exists($h->{$_}) ? ($_ => $h->{$_}) : () }
-        qw/inpath_sans_sheet sheetname encoding tempdir/),
+        qw/inpath_sans_sheet sheetname encoding tempdir raw_values/),
   };
 
   return $r;
@@ -1322,7 +1329,7 @@ ENCODING may be a comma-separated list of encoding
 names which will be tried in the order until one seems to work
 (requires pre-reading the input file).
 If only one encoding is specified it will be used without trying it first.
-The default is "UTF-8,windows-1252".
+The default is "UTF-8,UTF-16BE,UTF-16LE,windows-1252".
 
 =item output_encoding => ENCODING
 

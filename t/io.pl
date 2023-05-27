@@ -14,6 +14,7 @@ use t_TestCommon  # Test::More etc.
 
 use t_SSUtils;
 use Capture::Tiny qw/capture_merged tee_merged/;
+use Encode qw/encode decode/;
 
 use Spreadsheet::Edit qw/:all logmsg fmt_sheet cx2let let2cx sheet/;
 use Spreadsheet::Edit::IO qw/convert_spreadsheet/;
@@ -37,24 +38,37 @@ sub verif_Sheet1(;$){
   eq_deeply(title_rx(), 0) or die "${msg} title_rx is not 0";
   eq_deeply([@{ title_row() }],["First Name","Last Name","Email","Date"])
     or die "${msg} Sheet1 titles wrong";
+  #eq_deeply([@{ $rows[3] }],["Françoise-Athénaïs","de Rochechouart","","10/05/1640"])
+  eq_deeply([@{ $rows[3] }],["Françoise-Athénaïs","de Rochechouart","","Oct 5, 1640"])
+    or confess "${msg} Sheet1 row 4 is wrong, got: ",avis(@{ $rows[3] });
 }
 sub verif_Another_Sheet(;$) {
   my $msg = $_[0] // "";
-  eq_deeply(title_rx(), 0) or die "${msg} title_rx is not 0";
+  eq_deeply(title_rx(), 0) or confess "${msg} title_rx is not 0";
   eq_deeply([@{ title_row() }],["Input","Output"])
-    or die "Another Sheet titles wrong; title_row...",vis([@{ title_row() }]);
+    or confess "Another Sheet titles wrong;",vis([@{ title_row() }]);
   apply {
     my $exp = 100 + $rx - 1;
-    eq_deeply($crow{B}, $exp) or die "$msg Another Sheet:Col B, rx $rx is $exp";
+    eq_deeply($crow{B}, $exp) 
+      or confess "$msg Another Sheet:Col B, rx $rx is $exp";
+  }
+}
+
+sub doconvert(@) {
+  if (@_ % 2 == 0) {
+    convert_spreadsheet(verbose => $verbose, debug => $debug, @_);
+  } else {
+    my $inpath = shift;
+    convert_spreadsheet($inpath, verbose => $verbose, debug => $debug, @_);
   }
 }
 sub doread($$) {
   my ($opts, $inpath) = @_;
   sheet undef;
-  eq_deeply(sheet(), undef) or die "sheet() did not return undef";
-  eq_deeply(eval{$num_cols},undef) or die "num_cols unexpectedly valid";
+  eq_deeply(sheet(), undef) or confess "sheet() did not return undef";
+  eq_deeply(eval{$num_cols},undef) or confess "num_cols unexpectedly valid";
   read_spreadsheet {debug => $debug, verbose => $verbose, %$opts}, $inpath;
-  die "num_cols is not positive" unless $num_cols > 0;
+  confess "num_cols is not positive" unless $num_cols > 0;
 }
 # Test the various ways of specifying a sheet name
 doread({}, $input_xlsx_path."!Sheet1"); verif_Sheet1();
@@ -68,17 +82,48 @@ die "Conflicting sheetname opt and !suffix not caught" if $@ eq "";
 
 # Extract all sheets
 my $dirpath = Path::Tiny->tempdir;
-convert_spreadsheet(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path, cvt_to => "csv", verbose => $verbose, debug => $debug);
+doconvert(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path, cvt_to => "csv");
 say dvis '###BBB $dirpath ->children : ',avis($dirpath->children) if $debug;
 my $got = [sort map{$_->basename} $dirpath->children];
 my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
 eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
 
 # "Read" a csv; should be a pass-thru without conversion
-read_spreadsheet {verbose => $verbose}, $dirpath->child("Sheet1.csv");
-verif_Sheet1 "(extracted csv)";
+my $testcsv_path = $dirpath->child("Sheet1.csv");
+{
+  read_spreadsheet {verbose => $verbose}, $testcsv_path;
+  verif_Sheet1 "(extracted csv)";
+  my $hash = doconvert(inpath=>$testcsv_path, cvt_to => 'csv');
+  die "expected null converstion" unless $hash->{outpath} eq $testcsv_path;
+}
 
-#TODO: convert_spreadsheet csv->csv with transcoding
+# csv-to-csv with transcoding
+{
+  my $exp_chars = $testcsv_path->slurp_utf8();
+  my $tdir = Path::Tiny->tempdir();
+  for my $enc (qw/UTF-8 UTF-16 UTF-32/) {
+    say "------------- Transcode to/from $enc -------------" if $debug;
+    my $fromutf8_result;
+    { 
+      my $h = doconvert(inpath => $testcsv_path,
+                        outpath => $tdir->child("${enc}.csv"),
+                        output_encoding => $enc);
+      my $got_octets = path($h->{outpath})->slurp_raw;
+      my $got_chars = decode($enc,$got_octets,Encode::FB_CROAK|Encode::LEAVE_SRC);
+      die "transcoding to $enc did not work\n",dvis('$got_octets\n$got_chars\n$exp_chars\n') unless $got_chars eq $exp_chars;
+      $fromutf8_result = $h->{outpath};
+    }
+    { my $h = doconvert(inpath => $fromutf8_result,
+                        cvt_to => "csv", 
+                        input_encoding => $enc,
+                        #output_encoding => 'utf8'
+                       );
+      my $got_octets = path($h->{outpath})->slurp_raw;
+      my $got_chars = decode("UTF-8",$got_octets,Encode::FB_CROAK|Encode::LEAVE_SRC);
+      die "transcoding back to utf8 did not work\n",dvis('$got_octets\n$got_chars\n$exp_chars\n') unless $got_chars eq $exp_chars;
+    }
+  }
+}
 
 say "Done." unless $silent;
 exit 0;

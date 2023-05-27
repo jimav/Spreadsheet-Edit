@@ -2628,7 +2628,7 @@ sub read_spreadsheet($;@) {
                       [
       qw/title_rx/,
       qw/iolayers encoding verbose silent debug/,
-      qw/tempdir use_gnumeric sheetname/, # for OpenAsCsv
+      qw/tempdir use_gnumeric raw_values sheetname/, # for OpenAsCsv
       qw/required min_rx max_rx first_cx last_cx/, # for title_rx
                       ],
       desc => "read_spreadsheet option",
