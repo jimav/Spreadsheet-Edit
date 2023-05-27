@@ -215,6 +215,7 @@ use Scalar::Util qw(looks_like_number openhandle reftype refaddr blessed);
 use List::Util qw(min max sum0 first any all pairs pairgrep);
 use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename dirname fileparse);
+use File::Find ();
 use Symbol qw(gensym);
 use POSIX qw(INT_MAX);
 use Guard qw(scope_guard);

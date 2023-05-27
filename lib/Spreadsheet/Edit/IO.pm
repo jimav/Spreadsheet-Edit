@@ -45,7 +45,7 @@ use List::Util qw/none all notall first/;
 use Encode qw(encode decode);
 # DDI 5.015 is needed for 'qshlist'
 use Data::Dumper::Interp qw/vis visq dvis ivis avis qsh qshlist u/;
-use File::Glob qw/bsd_glob/;
+use File::Glob qw/bsd_glob GLOB_NOCASE/;
 use Digest::MD5 qw/md5_base64/;
 
 use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall/;
@@ -297,10 +297,11 @@ sub _file_fingerprint($) {
 our $OLpath_answer = $ENV{SPREADSHEET_EDIT_LOPATH};
 sub _openlibre_path() {
   return $OLpath_answer if $OLpath_answer;
-  foreach my $short_name (qw(libreoffice loffice localc)) {
-    if ($OLpath_answer = which($short_name)) { return $OLpath_answer }
+  unless ($ENV{SPREADSHEET_EDIT_IGNPATH}) {
+    foreach my $short_name (qw(libreoffice loffice localc)) {
+      if ($OLpath_answer = which($short_name)) { return $OLpath_answer }
+    }
   }
-
   # Search for local/isolated LibreOffice (or OO) installations, which are
   # the result of unpacking from a .deb or other archive into a non-standard 
   # location.  The resulting structure is
@@ -319,6 +320,7 @@ sub _openlibre_path() {
   # I tried just doing File::Glob::bsd_glob('/*/*/*/opt/libre*/program') but 
   # it silently failed even though the same glob works from the shell. Mmff...
   my %results;
+  $ENV{SPREADSHEET_EDIT_NOLOSEARCH} or
   File::Find::find(
     { wanted => sub{
         # Undef fullname OR invalid "_" filehandle implies a broken symlink, 
@@ -344,7 +346,8 @@ sub _openlibre_path() {
         if (basename($_) eq "opt") {
           my $prefix = path($_)->parent->stringify;
           for my $o_l (qw/libre open/) {
-            if (my $path = (sort bsd_glob "$_/${o_l}*/program/soffice")[-1]) {
+            if (my $path = ( sort +bsd_glob("$_/${o_l}*/program/soffice", 
+                                            GLOB_NOCASE) )[-1]) {
               (my $subpath = $path) =~ s/^\Q${prefix}\E// or oops;
               if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
                 @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
@@ -365,17 +368,19 @@ sub _openlibre_path() {
     },
     "/", (defined($ENV{HOME}) ? $ENV{HOME} : ())
   );
-  $OLpath_answer = $results{libre}{path} 
-                   // $results{open}{path} 
-                   // which("soffice")  # installed Open Office?
-                   // croak "Can not find LibreOffice or OpenOffice";
+  $OLpath_answer = path(
+     $results{libre}{path} // $results{open}{path} 
+       // (!$ENV{SPREADSHEET_EDIT_IGNPATH} && which("soffice")) # installed OO?
+       // croak "Can not find LibreOffice or OpenOffice"
+     )->realpath->stringify
 }#_openlibre_path
 
 sub _openlibre_features() {
   state $hash;
   return $hash if defined $hash;
   my $prog = _openlibre_path() // return(($hash={ available => 0 }));
-  my ($s) = (qx/$prog --version/ =~ /Libre.*? (\d+\.[\d\.]*)/);
+  my ($s) = (qx/$prog --version/ =~ /Libre.*? (\d+\.\d+\.\w+)/);
+  confess "$prog --version DID NOT WORK" unless $s;
   my $version = version->parse("v".($s//"0.1"));
   $hash = {
     available => 1,
@@ -950,10 +955,10 @@ sub _tool_extract_all_csvs($$) {
   if (_openlibre_supports_allsheets()) {
     _convert_using_openlibre($opts, $destdir);
   }
-  elsif (_ssconvert_supports_all_sheets()) {
+  elsif (_ssconvert_supports_allsheets()) {
     _convert_using_ssconvert($opts, $destdir);
   }
-  else { croak "No can do.  Please install LibreOffice 7.2 or newer" }
+  else { croak "Can't extract 'allsheets'.  Please install LibreOffice 7.2 or newer" }
 }
 
 sub _tool_can_extract_one_csv() { 
