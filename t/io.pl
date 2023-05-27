@@ -74,8 +74,11 @@ my $got = [sort map{$_->basename} $dirpath->children];
 my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
 eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
 
+# "Read" a csv; should be a pass-thru without conversion
 read_spreadsheet {verbose => $verbose}, $dirpath->child("Sheet1.csv");
 verif_Sheet1 "(extracted csv)";
+
+#TODO: convert_spreadsheet csv->csv with transcoding
 
 say "Done." unless $silent;
 exit 0;

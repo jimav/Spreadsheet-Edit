@@ -15,7 +15,7 @@ use t_SSUtils;
 
 use Spreadsheet::Edit qw(:all);
 
-my $inpath = create_testdata(
+my $inpath_obj = create_testdata(
     rows => [
       [ "Rowx 0 pre-title-row with only one non-empty column" ], # [0] B..E missing
       [ "A title1", "bee title", "Ctitle", "Dtitle" ],           # [1] cell E missing
@@ -30,6 +30,7 @@ my $inpath = create_testdata(
     ],
     gen_rows => 4,  # some more data rows
 );
+my $inpath = $inpath_obj->stringify;
 #warn dvis '### $debug $verbose $silent $Spreadsheet::Edit::Verbose';
 read_spreadsheet $inpath;
 defined(sheet()) or die "read_spreadsheet did not create current_sheet";

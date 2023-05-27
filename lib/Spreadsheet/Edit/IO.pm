@@ -1,4 +1,4 @@
-# License: http://creativecommons.org/publicdomain/zero/1.0/
+#; License: http://creativecommons.org/publicdomain/zero/1.0/
 # (CC0 or Public Domain).  To the extent possible under law, the author,
 # Jim Avera (email jim.avera at gmail dot com) has waived all copyright and
 # related or neighboring rights to this document.  Attribution is requested
@@ -26,26 +26,27 @@ use version ();
 use Carp;
 sub oops(@) { @_=("\n".__PACKAGE__." oops:\n",@_,"\n"); goto &Carp::confess }
 sub btw(@) { local $_=join("",@_); s/\n\z//s; warn((caller(0))[2].": $_\n"); }
-use File::Temp qw(tempfile tempdir);
-use File::Path qw(make_path remove_tree);
+
 use File::Copy ();
+use File::Copy::Recursive ();
 
 use Path::Tiny qw/path/;
 
-# Path::Tiny OBVIATES NEED FOR all but these...
-use File::Spec::Functions qw(catdir catfile tmpdir devnull abs2rel);
+# Path::Tiny OBVIATES NEED for many but we still need this
+use File::Spec::Functions qw/devnull tmpdir/;
 
 # Still sometimes convenient...
 use File::Basename qw(basename dirname);
 
 use File::Which qw/which/;
-use Scalar::Util qw(openhandle blessed);
 use Guard qw(guard scope_guard);
 use Fcntl qw(:flock :seek);
-use Encode qw(decode);
+use List::Util qw/none all notall first/;
+use Encode qw(encode decode);
 # DDI 5.015 is needed for 'qshlist'
-use Data::Dumper::Interp qw/vis visq dvis ivis qsh qshlist u/;
-use File::Glob ':bsd_glob';
+use Data::Dumper::Interp qw/vis visq dvis ivis avis qsh qshlist u/;
+use File::Glob qw/bsd_glob/;
+use Digest::MD5 qw/md5_base64/;
 
 use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall/;
 our %SpreadsheetEdit_Log_Options = (
@@ -54,6 +55,61 @@ our %SpreadsheetEdit_Log_Options = (
      $_[1][3] =~ /(?:::|^)[a-z][^:]*$/
   },
 );
+
+my $progname = path($0)->basename;
+
+# A private Libre/Open Office profile dir is needed to avoid conflicts
+# with interactive sessions, see
+# https://ask.libreoffice.org/en/question/290306/how-to-start-independent-lo-instance-process
+#
+# We use a persistent profile dir shared among processes for a given user
+# (actually one for each unique external tool which needs one).
+# Sharing is okay because we get an exclusive lock before actually using it.
+state $profile_parent_dir = do{ # also used for lockfile
+  my $euid = $>;
+  my $user = $euid; # getpwuid($euid) // $euid;
+  (my $dname = __PACKAGE__."_${user}_profileparent") =~ s/::/-/g;
+  (my $path = path(File::Spec->tmpdir)->child($dname))->mkpath;
+  $path # Path::Tiny
+};
+sub _get_tool_profile_dir($$) {
+  my ($opts, $tool_path) = @_;
+  my $fingerprint = _file_fingerprint($tool_path);
+  my $toolname = path($tool_path)->basename(qw/\.(exe|cmd|bat)$/);
+  my $path = $profile_parent_dir->child("${toolname}_$fingerprint");
+  $path->mkpath;
+  $path
+}
+
+# Prevent concurrent document conversions.
+# LO & OO can't handle concurrent access to the same profile.
+sub _get_exclusive_lock($) { # returns lock object
+  my $opts = shift;
+  my $lockfile_path = $profile_parent_dir->child("LOCKFILE");
+  open my $lock_fh, "+>>", $lockfile_path or die $!;
+  chmod 0666, $lock_fh;
+  $opts->{lockfile_fh} = $lock_fh;
+  if (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
+    seek($lock_fh,0,SEEK_SET) or die;
+    (my $owner = do{ local $/; <$lock_fh> }) =~ s/\s*\z//s;
+    {
+      last unless $owner =~ /pid (\d+)/ && (my @s = stat("/proc/$1"));
+      last unless my @pw = getpwuid($s[4]);
+      $owner = $pw[0]." ".$owner; # user name
+    }
+    warn ">> ($$) Waiting for exclusive lock owned by $owner",
+         " to convert spreadsheet...\n";
+    flock($lock_fh, LOCK_EX) or die "flock: $!";
+  }
+  print $lock_fh "pid $$ ($progname)\n"; # always appends
+}
+sub _release_lock($) {
+  my $opts = shift;
+  my $fh = delete($opts->{lockfile_fh}) // oops;
+  truncate($fh,0);
+  flock($fh, LOCK_UN) or die "flock UN: $!";
+  close $fh;
+}
 
 # Libre Office text converter "charset" numbers
 my %LO_charsets = (
@@ -165,8 +221,6 @@ sub _name2LOcharsetnum($) {
   $LO_charsets{$_}
 }
 
-sub _is_seekable($) { my $fh = shift; seek($fh, tell($fh), SEEK_SET) }
-
 # convert between 0-based index and spreadsheet column letter code.
 # Default argument is $_
 sub cx2let(_) {
@@ -183,12 +237,13 @@ sub let2cx(_) {
   }
   return $n;
 }
-=for Pod::Coverage cxrx2sheetaddr oops btw
-=cut
 sub cxrx2sheetaddr($$) { # (1,99) -> "B100"
   my ($cx, $rx) = @_;
   return cx2let($cx) . ($rx + 1);
 }
+
+=for Pod::Coverage cxrx2sheetaddr oops btw
+=cut
 
 our @sane_CSV_read_options = (
   # Text::CSV pod says to not specify 'eol' to allow embedded newlines,
@@ -211,9 +266,6 @@ our @sane_CSV_write_options = (
   auto_diag   => 2,       # die on errors
 );
 
-my $progname = path($0)->basename;
-my $lockfile_path = path(File::Spec->tmpdir)->child(__PACKAGE__.".LOCKFILE")->stringify;
-
 my %Saved_Sigs;
 sub _sighandler {
   if (! $Saved_Sigs{$_[0]} or $Saved_Sigs{$_[0]} eq 'DEFAULT') {
@@ -233,21 +285,28 @@ sub _signals_guard() {
   return guard { @SIG{keys %Saved_Sigs} = (values %Saved_Sigs) }
 }
 
+# Create a probably-unique fingerprint for a particular file
+sub _file_fingerprint($) {
+  my $path = shift;
+  my $ctx = Digest::MD5->new;
+  $ctx->add($_) for((stat($path))[0,1,9]); # dev,ino,mtime
+  substr($ctx->b64digest,0,6)
+}
+
 # Find LibreOffice, or failing that OpenOffice
+our $OLpath_answer = $ENV{SPREADSHEET_EDIT_LOPATH};
 sub _openlibre_path() {
-  state $answer = $ENV{SPREADSHEET_EDIT_LOPATH};
-  return $answer if $answer;
+  return $OLpath_answer if $OLpath_answer;
   foreach my $short_name (qw(libreoffice loffice localc)) {
-    if ($answer = which($short_name)) { return $answer }
+    if ($OLpath_answer = which($short_name)) { return $OLpath_answer }
   }
-  # Search for "isolated" LibreOffice (or OO) installations, which are
+
+  # Search for local/isolated LibreOffice (or OO) installations, which are
   # the result of unpacking from a .deb or other archive into a non-standard 
   # location.  The resulting structure is
   #    <somedir>/opt/{libreoffice,openoffice}*/program/soffice
-
-  # I tried File::Glob::bsd_glob('/*/*/*/opt/libre*/program') but it failed for
-  # unknown reasons even though the same glob works from the shell.  
-  # Hence this:
+  # where <somedir> may be a full version number, and the * may be a major
+  # version number (e.g. "libreoffice7.5", "openoffice4").
   my sub _cmp_subpaths($$) {
     my ($sp1, $sp2) = @_;
     oops     if !defined($sp1);
@@ -255,23 +314,24 @@ sub _openlibre_path() {
     # Use longest version in the (sub-)path, e.g. "4.4.1/opt/openoffice4/..."
     my (@v1) = sort { length($a) <=> length($b) } ($sp1 =~ /(\d[.\d]*)/g);
     my (@v2) = sort { length($a) <=> length($b) } ($sp2 =~ /(\d[.\d]*)/g);
-    ($v1[-1]//0) <=> ($v2[-1]//0)
+    version->parse($v1[-1]//0) <=> version->parse($v2[-1]//0)
   }
-  my ($lo_path, $lo_subpath);
-  my ($oo_path, $oo_subpath);
+  # I tried just doing File::Glob::bsd_glob('/*/*/*/opt/libre*/program') but 
+  # it silently failed even though the same glob works from the shell. Mmff...
+  my %results;
   File::Find::find(
     { wanted => sub{
         # Undef fullname OR invalid "_" filehandle implies a broken symlink, 
         #   see https://github.com/Perl/perl5/issues/21122
-        # Zero size implies /proc or something else we should not enter.
+        # Zero size implies /proc or something similar; do not enter.
         # File::Find::fullname unreadable implies followed link to inaccessable 
-        #   (The initial "_" stat is invalid, so we can't check -l _)
+        # (The initial "_" stat may be invalid, so "-l _" is useless)
         $! = 0;
         if (
             !defined($File::Find::fullname) # broken link, per docs
             || (! -r _) || (! -x _) # unreadable item or invalid "_" handle
                                  # https://github.com/Perl/perl5/issues/21122
-            || (stat(_))[7] == 0 # zero size ==> /proc or something; ignore
+            || (stat(_))[7] == 0 # zero size ==> /proc or similar
             || ! -r $File::Find::fullname # presumably a symlink to unreadable
             || ! -x _                     # or unsearchable dir
            ) {
@@ -279,29 +339,24 @@ sub _openlibre_path() {
           return 
         }
         return unless -d _;
-        # Look for   /*/<unpackrootdir>/opt/libreofficeXXX/program/
-        #             1        2         3     4             5
-        #   or     /*/*/<unpackrootdir>/opt/libreofficeXXX/program/
-        #           1 2        3         4     5             6
+        # Maximum depth: /*/*/<unpackparent>/opt/libreofficeXXX/program/
         my $depth = scalar(() = m#(/)#g);
-        if ($depth > 4) {
+        if (basename($_) eq "opt") {
+          my $prefix = path($_)->parent->stringify;
+          for my $o_l (qw/libre open/) {
+            if (my $path = (sort bsd_glob "$_/${o_l}*/program/soffice")[-1]) {
+              (my $subpath = $path) =~ s/^\Q${prefix}\E// or oops;
+              if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
+                @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
+              }
+            }
+          }
+        }
+        elsif ($depth == 4) {
           $File::Find::prune = 1; 
           return;
         }
-        if (basename($_) eq "opt") {
-          my $subpath = path($_)->parent->realpath->stringify;
-          my $path;
-          if ($path = bsd_glob "$_/libre*/program/soffice") {
-            if (_cmp_subpaths($subpath, $lo_subpath) >= 0) {
-              ($lo_path, $lo_subpath) = ($path, $subpath);
-            }
-          }
-          elsif ($path = bsd_glob "$_/open*/program/soffice") {
-            if (_cmp_subpaths($subpath, $oo_subpath) >= 0) {
-              ($oo_path, $oo_subpath) = ($path, $subpath);
-            }
-          }
-        }
+        elsif ($depth > 4) { oops dvis '$depth $_' }
       }, 
       follow_fast => 1,
       follow_skip => 2,
@@ -310,10 +365,33 @@ sub _openlibre_path() {
     },
     "/", (defined($ENV{HOME}) ? $ENV{HOME} : ())
   );
-  return (($answer = $lo_path)) if $lo_path;
-  return (($answer = $oo_path)) if $oo_path;
-  croak "Can not find LibreOffice or OpenOffice";
+  $OLpath_answer = $results{libre}{path} 
+                   // $results{open}{path} 
+                   // which("soffice")  # installed Open Office?
+                   // croak "Can not find LibreOffice or OpenOffice";
 }#_openlibre_path
+
+sub _openlibre_features() {
+  state $hash;
+  return $hash if defined $hash;
+  my $prog = _openlibre_path() // return(($hash={ available => 0 }));
+  my ($s) = (qx/$prog --version/ =~ /Libre.*? (\d+\.[\d\.]*)/);
+  my $version = version->parse("v".($s//"0.1"));
+  $hash = {
+    available => 1,
+    # LibreOffice 7.2 allows extracting all sheets at once
+    allsheets => ($version >= version->parse("v7.2")),
+    # ...but not yet extracting a single sheet by name.
+    # https://bugs.documentfoundation.org/show_bug.cgi?id=135762#c24
+    named_sheet => 0,
+  }
+}
+sub _openlibre_supports_allsheets() { _openlibre_features()->{allsheets} }
+sub _openlibre_supports_named_sheet() { _openlibre_features()->{named_sheet} }
+
+sub _ssconvert_features() { return { availble => 0 } } # TODO add back?
+sub _ssconvert_supports_allsheets() { _ssconvert_features()->{allsheets} }
+sub _ssconvert_supports_named_sheet() { _ssconvert_features()->{named_sheet} }
 
 sub _runcmd($@) {
   my ($opts, @cmd) = @_;
@@ -339,111 +417,97 @@ sub _runcmd($@) {
   return $r;
 }
 
-# If the arg is an existing directory, return "path/..." else just "path"
-sub _fmt_dirish($) {
-  my $path = shift;
-  -d $path ? catfile($path,"...") : $path
+sub _fmt_outpath_contents($) {
+  my $outpath = $_[0]->{outpath} // oops;
+  return "" unless -d $outpath;
+  "\n  outpath contains: "
+         .join(", ",map{qsh basename $_} path($outpath)->children);
 }
 
-# Create a temporary sub-dir of {tempdir} preferably with the given basename,
-# but if that name already exists then use a randomized name; this might
-# happen when {tempdir} is re-used.
-sub _mk_tempsubdir($$) { # does mkdir and returns path
-  my ($opts, $namehint) = @_;
-  my $basename = path($namehint || oops)->basename;
-  my $path = catdir($opts->{tempdir}, $basename);
-  if (mkdir $path) {
-    return $path;
-  }
-  my ($base,$suf) = ($basename =~ /^(.*?)((?:\.\w+)?)$/);
-  $path = File::Temp::tempfile(DIR => $opts->{tempdir},
-                               TEMPLATE => $base."_XXXXX", 
-                               SUFFIX => $suf, CLEANUP => 0)
-    or oops $!;
-  oops($path) unless $path =~ /^\Q$opts->{tempdir}\E\b/;
-
-  btw ">> mkdir $path (namehint=$namehint)" if $opts->{debug};
-  $path
-}
-sub _temp_filename ($$) { # returns a *momentarily* nonexistent file path
-  my ($opts, $namehint) = @_;
-  my $basename = path($namehint || oops)->basename;
-  my $path = catdir($opts->{tempdir}, $basename);
-  if (! -e $path) {
-    return $path;
-  }
-  my ($base,$suf) = ($basename =~ /^(.*?)((?:\.\w+)?)$/);
-  (undef,$path) = File::Temp::tempfile(DIR => $opts->{tempdir},
-                                       TEMPLATE => $base."_XXXXX", 
-                                       SUFFIX => $suf, UNLINK => 0);
-  oops($path) unless $path =~ /^\Q$opts->{tempdir}\E\b/;
-  btw ">> temp_filename $path (namehint=$namehint)" if $opts->{debug};
-  $path
-}
-
-sub _slurp_binary_file($) {
-  my ($input) = @_;
-  #return io($input)->all;
-  open my $fh, (openhandle($input) ? "<&" : "<"), $input
-    or croak "$input : $!\n";
-  binmode $fh;  # WARNING: affects arg if *filehandle was passed
-  local $/ = undef;
-  my $octets = <$fh>;
-  unless (openhandle($input)) { 
-    close $fh or die $!;
-  }
-  return $octets;
-}
-
-sub _write_binary_tempfile($$) {
-  my ($octets, $opts) = @_;
-  # Write to a non-auto-deleted file in {tempdir} based on the {inpath} name.
-  my $path = path(_mk_tempsubdir($opts, $opts->{inpath}));
-WRONG need filename not subdir...
-  $path->spew($octets);
-  $path->stringify;
-}
-
-sub _convert_using_openlibre($) {
+my $tempdir;
+sub _create_tempdir_if_needed($) {
   my $opts = shift;
-  foreach (qw/inpath cvt_from cvt_to outpath/)
-    { oops "missing opts->{$_}" unless exists $opts->{$_} }
+  # Keep a per-process persistent temp directory, deleted at process exit.
+  # It contains result files when the user did not specify {outpath},
+  # plus a cache of as-yet unrequested sheet .csv files, used when the
+  # external tool can only extract all sheets, not a single sheet by name:
+  #
+  #              tempdir/
+  #                <ifbase>_<sig>.xlsx etc. # single file returned to user
+  #                <ifbase>_<sig>/*.csv     # directory returned to user
+  #                <ifbase>_<sig>_csvcache/*.csv
+  # 
+  # <ifbase> is derived from the intput file name, and <sig> is a fingerprint 
+  # based on input file's dev, inode, and modification timestamp.
+  #
+  $tempdir //= do{
+    #(my $template = __PACKAGE__."_XXXXX") =~ s/::/-/g;
+    #Path::Tiny->tempdir($template)
+    my $pid = $$;
+    my $euid = $>;
+    my $user = getpwuid($euid) // $euid;
+    (my $dname = __PACKAGE__."_${user}_${pid}") =~ s/::/-/g;
+    (my $path = path(File::Spec->tmpdir)->child($dname))->mkpath;
+    $path
+  };
+}
+END{ $tempdir->remove_tree if $tempdir; }
 
-  my $outsuf;
-  my $lo_cvtto; # "output_file_extension:output_filter_spec"
-  if ($opts->{cvt_to} =~ /^([a-z]+):/) {
-    $outsuf = $1;
-    $lo_cvtto = $opts->{cvt_to};
-  } else {
-    # N.B. 'man unoconv' has some documentation of import & export filters
-    $outsuf = $opts->{cvt_to};
-    state $suf2ofilter = {
-      csv  => "Text - txt - csv (StarCalc)",
-      txt  => "Text - txt - csv (StarCalc)",
-      xls  => "MS Excel 97",
-      xlsx => "Calc MS Excel 2007 XML",
-    };
-    my $ofilter = $suf2ofilter->{$outsuf}
-      // croak "I don't know how to convert to '$opts->{cvt_to}'\n";
-    $lo_cvtto = $outsuf . ":" . $ofilter;
-  }
+# Compose {tempdir}/{ifbase}_<signature>_csvcach 
+sub _cachedir($) {
+  my $opts = shift;
+  $opts->{inpath_fingerprint} 
+              //= _file_fingerprint($opts->{inpath_sans_sheet});
+  my $dname = $opts->{ifbase}."_".$opts->{inpath_fingerprint}."_csvcache";
+  $tempdir->child($dname)
+}
 
-  # I think (not certain) that we can only specify the encoding for CSV files,
+sub _convert_using_openlibre($$) {
+  my ($opts, $dst) = @_;
+  oops unless all{ $opts->{$_} } qw/inpath_sans_sheet cvt_from cvt_to/;
+  oops if $opts->{allsheets} && ! _openlibre_supports_allsheets();
+  oops if $opts->{sheetname} && ! _openlibre_supports_named_sheet();
+  oops if $dst =~ /\.csv$/;
+  my $debug = $opts->{debug};
+
+  my $prog = _openlibre_path() // oops;
+
+  my $saved_UserInstallation = $ENV{UserInstallation};
+  $ENV{UserInstallation} = "file://"._get_tool_profile_dir($opts, $prog);
+  scope_guard {
+    if (defined $saved_UserInstallation) {
+      $ENV{UserInstallation} = $saved_UserInstallation;
+    } else {
+      delete $ENV{UserInstallation}
+    }
+  };
+
+  # The --convert-to argument is "suffix:filtername:filteropts"
+  
+  # I think (not certain) that we can only specify the encoding of CSV files,
   # either as input or output;  .xlsx and .ods spreadsheets (which are based
-  # on XML) could in principle use any encoding internally; but not sure
-  # we can control that, and anyway at this point UTF8 will be preferred.   
-  # Possibly older .xls files will not be handled portably unless encoding 
-  # is 'windows-1252' ("WinLatin 1") but ignoring that.  This might be a bug.
-  my $encoding = _get_encodings_from_opts($opts) // 'UTF-8';
+  # on XML) could in principle use any encoding internally, but I'm not sure
+  # we can control that, nor should it matter.
 
-  my $charset = _name2LOcharsetnum($encoding); # dies if unknown enc
-
-  # New code here attempts to use CSV filter options to *create* a spreadsheet, 
-  # e.g. to specify INPUT encoding and, on CSV import and column formats.
+  # REFERENCES:
+  # https://help.libreoffice.org/7.5/en-US/text/shared/guide/start_parameters.html?&DbPAR=SHARED&System=UNIX
   # http://wiki.openoffice.org/wiki/Documentation/DevGuide/Spreadsheets/Filter_Options
-  #CSV INPUT FORMAT CONTROL UNTESTED as of 2/6/2021
-  if (! $opts->{infilter_opts}) {
+  # https://wiki.documentfoundation.org/Documentation/DevGuide/Spreadsheet_Documents#Filter_Options_for_the_CSV_Filter
+  
+  state $suf2ofilter = {
+    csv  => "Text - txt - csv (StarCalc)",
+    txt  => "Text - txt - csv (StarCalc)",
+    xls  => "MS Excel 97",
+    xlsx => "Calc MS Excel 2007 XML",
+  };
+
+  my $ifilter = $opts->{soffice_infilter} //= do{
+    my $filter_name = $suf2ofilter->{$opts->{cvt_from}} 
+        // croak "Don't know soffice output filter name for $opts->{cvt_from}";
     if ($opts->{cvt_from} eq "csv") {
+      #CSV INPUT FORMAT CONTROL UNTESTED as of 2/6/2021
+      my $enc = $opts->{input_encoding};
+      my $charset = _name2LOcharsetnum($enc); # dies if unknown enc
       my $colformats = "";
       if (my $cf = $opts->{col_formats}) {
         $cf = [split /\//, $cf] if !ref($cf);  #  fmtA/fmtB/...
@@ -462,262 +526,232 @@ sub _convert_using_openlibre($) {
           $colformats .= "$ix/$_";
         }
       }
-      $opts->{infilter_opts} = ":"
-        # Tokens 1-5: FldSep=, TxtDelim='"' Charset FirstLineNum CellFormats
-        ."44,34,$charset,1,$colformats"
-        # Tokens 6-7: LanguageId QuoteAllTextCells
-        .",true" ;
+      $filter_name.":"
+      # Tokens 1-5: FldSep=, TxtDelim='"' Charset FirstLineNum CellFormats
+      ."44,34,$charset,1,$colformats"
+      # Tokens 6-7: LanguageId QuoteAllTextCells
+      .",true" ;
+    } 
+    else {
+      $filter_name
     }
-  }
-  if (! $opts->{outfilter_opts}) {
-    if ($opts->{cvt_to} eq "csv") {
-      # https://wiki.documentfoundation.org/Documentation/DevGuide/Spreadsheet_Documents#Filter_Options_for_the_CSV_Filter
-      $opts->{outfilter_opts} = ":"
-        # Tokens 1-4: FldSep=, TxtDelim=" Charset FirstLineNum
-        ."44,34,$charset,1"
-        # Token 5: Cell format codes, separated by / 
-        #  1=Std 2=Text 3=MM/DD/YY 4=DD/MM/YY 5=YY/MM/DD 6-8=?? 
-        #  9=ignore field (do not import),10=US-English (=> 3.14 not 3,14)
-        #  (I'm guessing 1 is like 10 but using current or specified language)
-        .","
-        # Token 6: Language identifier (uses Microsoft lang ids)
-        #   1033 means US-English (omitted => use UI's language)
-        .","
-        # Token 7: QuoteAllTextCells
-        # *** true will "quote" even single-bareword cells, which looks
-        # *** bad and makes t/ tests messier.  OTOH quotes provide information
-        # *** that such cells were not numbers or dates, etc.  
-        # *** So I'm now using "true" to always quote.
-        .",true"
-        # Token 8: DetectSpecialNumbers"
-        .","
-        # Token 9: "Save cell contents as shown"
-        .",true"
-        # Token 10: "Export cell formulas"
-        .",false"
-        # Token 11: not used during export
-        .","
-        # Token 12: (LO 7.2+) sheet selections:
-        #   0 or absent => the "first" sheet
-        #   1-N => the Nth sheet (arrgh, can not specify name!!)
-        #   -1 => export all sheets to files named filebasenamne.Sheetname.csv
-        .",".(
-           $opts->{allsheets} ? 
-             _openlibre_supports_allsheets() ? -1 
-             : croak("Your Libre Office version does not support 'allsheets'")
-           :
-           defined($opts->{sheetname}) ? (
-             (_openlibre_supports_named_sheet() || $opts->{sheetname} =~ /^[1-9]\d*$/) ? $opts->{sheetname}
-             :
-             croak("Libre Office does not support specifying a sheet by name")
-           )
-           : ""
-       )
-       ;
-    }  
-  }
+  };
 
-  # LibreOffice (and unoconv) sometimes aborts if the same user has LO open
-  # interactively.  Forcing a separate user-config dir seems to avoid this.
-  # https://ask.libreoffice.org/en/question/290306/how-to-start-independent-lo-instance-process
-  my $saved_UserInstallation = $ENV{UserInstallation};
-  { my $EUID = $>;
-    # Unique per user.  We use a lockfile to prevent concurrent access,
-    # so sharing the profile among all processes is okay. 
-    # Measured as 20% faster when re-using an existing profile.
-    my $profile_dir = path(File::Spec->tmpdir)
-                        ->child(__PACKAGE__."_${EUID}_LOprofile");
-    mkdir $profile_dir;
-    if (! -e $profile_dir) {
-      croak "$profile_dir : $!";
-    } else {
-      croak "$profile_dir is not a directory owned by you!\n"
-        unless (-d _ && -o _);
-      $ENV{UserInstallation} = "file://$profile_dir";
+  my $ofilter = $opts->{soffice_outfilter} //= do{
+    # OutputFilterName[:paramtoken,paramtoken,...]
+    my $filter_name = $suf2ofilter->{$opts->{cvt_to}} 
+        // croak "Don't know soffice output filter name for $opts->{cvt_to}";
+    if ($opts->{cvt_to} eq "csv") {
+      my $enc = $opts->{output_encoding};
+      my $charset = _name2LOcharsetnum($enc); # dies if unknown enc
+      $filter_name.":"
+      # Tokens 1-4: FldSep=, TxtDelim=" Charset FirstLineNum
+      ."44,34,$charset,1"
+      # Token 5: Cell format codes, separated by / 
+      #  1=Std 2=Text 3=MM/DD/YY 4=DD/MM/YY 5=YY/MM/DD 6-8=?? 
+      #  9=ignore field (do not import),10=US-English (=> 3.14 not 3,14)
+      #  (I'm guessing 1 is like 10 but using current or specified language)
+      .","
+      # Token 6: Language identifier (uses Microsoft lang ids)
+      #   1033 means US-English (omitted => use UI's language)
+      .","
+      # Token 7: QuoteAllTextCells
+      # *** true will "quote" even single-bareword cells, which looks
+      # *** bad and makes t/ tests messier.  OTOH quotes provide information
+      # *** that such cells were not numbers or dates, etc.  
+      # *** So I'm now using "true" to always quote.
+      .",true"
+      # Token 8: DetectSpecialNumbers"
+      .","
+      # Token 9: "Save cell contents as shown"
+      .",true"
+      # Token 10: "Export cell formulas"
+      .",false"
+      # Token 11: not used during export
+      .","
+      # Token 12: (LO 7.2+) sheet selections:
+      #   0 or absent => the "first" sheet
+      #   1-N => the Nth sheet (arrgh, can not specify name!!)
+      #   -1 => export all sheets to files named filebasenamne.Sheetname.csv
+      .",".($opts->{allsheets} ? -1 : die("add named-sheet support here"))
     }
-  } 
-  scope_guard {
-    if (defined $saved_UserInstallation) {
-      $ENV{UserInstallation} = $saved_UserInstallation;
-    } else {
-      delete $ENV{UserInstallation}
+    else {
+      $filter_name
     }
   };
 
   # We can only control the output directory path, not the name of
-  # the specific files.  If {outpath} is a directory then the result
-  # can be put there directly, detectable afterwards as being not 
-  # in $opts{existing_in_outpath}.
+  # an individual result file.  If $dst is a directory then the result 
+  # could theoretically output into it directly, but instead we always 
+  # output to an ephemeral temp directory and then move the results to $dst
   #
-  # Otherwise we create a temp dir and later move the output file
-  # to the desired destination.
-  my $_outdir_is_temp;
-  if (defined($opts->{existing_in_outpath}) || -d $opts->{outpath}) {
-    $opts->{_outdir} = $opts->{outpath};
-  } else {
-    $opts->{_outdir} = catfile($opts->{tempdir}, "LO-OUTDIR");
-    $_outdir_is_temp = 1;
-  }
-
-  # Note: unoconv seems unsupported and now spews warnings about an old
-  # Python library, so we no longer use it.  Old code is in commit cac7a76b
+  # With 'allsheets' the resulting files must be renamed to conform to our
+  # external API (namely SHEETNAME.csv).
+  #
+  # ERROR DETECTION: As of LO 7.5 we always get zero exist status and the 
+  # only way to detect errors is to notice that no files were written.
+  # https://bugs.documentfoundation.org/show_bug.cgi?id=155415
+  #
+  my $tdir = Path::Tiny->tempdir(path($dst)->basename."_XXXXX");
+  # will be deleted when $dirpath goes out of scope
   
-  my $prog = _openlibre_path() // croak "Libre/Open Office not found";
   my @cmd = ($prog, "--headless", "--invisible",
-                    "--convert-to", $lo_cvtto.($opts->{outfilter_opts}//""),
-                    "--outdir", $opts->{_outdir},
+                    $ifilter ? ("--infilter=$ifilter") : (),
+                    "--convert-to", 
+                      $opts->{cvt_to}.($ofilter ? ":$ofilter" : ""),
+                    "--outdir", $tdir,
                     $opts->{inpath_sans_sheet});
 
-  $opts->{suppress_stdout} = !$opts->{debug}; # avoid "convert ..." message
-  
-  # Arrgh! As of LO 7.5, we get zero exit status even if the input
-  # files do not exist or are not readable.
-  # https://bugs.documentfoundation.org/show_bug.cgi?id=155415
-  unless (-r $opts->{inpath_sans_sheet}) {
-    croak $opts->{inpath_sans_sheet}." is missing or unreadable\n";
-  }
-  if (-e $opts->{_outdir} && ! -w _) {
-    croak $opts->{_outdir}." exists but is not writable\n";
-  }
+  $opts->{suppress_stdout} = !$debug; # avoid "convert ..." message
 
   my $cmdstatus = _runcmd($opts, @cmd);
 
   if ($cmdstatus != 0) {
-    if ("@cmd" =~ / -o \/tmp\/out\./ || ($ENV{PWD}//"") eq "/tmp" && "@cmd" =~ / -o (?:\.\/)?out\./) {
-      btw "**KNOWN unoconv bug causes abort if output file is /tmp/out.* (yes, strange)\n";
-    }
-    croak "($$) Conversion of '$opts->{inpath}' to $outsuf failed\n",
-          "(make sure libre/open office is not running)\n"
+    # This should never happen, see ERROR DETECTION above
+    croak "($$) Conversion of '$opts->{inpath}' to $opts->{cvt_to} failed\n";
+  }
+  
+  my @result_files = path($tdir)->children;
+  btw dvis '>> @result_files' if $debug;
+  if (@result_files == 0) {
+    croak $opts->{inpath_sans_sheet}." is missing or unreadable\n"
+      unless -r $opts->{inpath_sans_sheet};
+    croak "Something went wrong, ",path($prog)->basename," produced no output\n"
   }
 
   if ($opts->{allsheets}) {
     # Rename files to match our API (omit the spreadsheetbasename- prefix)
-    oops if $_outdir_is_temp;
-    my $outdir = path $opts->{_outdir};
-    foreach my $orig (map{$_->basename} $outdir->children) {
-      next if $opts->{existing_in_outpath}->{$orig};
-      (my $new = $orig) =~ s/^$opts->{basename}-// or oops dvis '$orig $opts->{basename}';
-      my $orig_path = $outdir->child($orig);
-      my $new_path  = $outdir->child($new);
-      btw ">> Renaming $orig_path -> $new\n" if $opts->{debug};
-      File::Copy::move($orig_path, $new_path) or oops "$!";
+    foreach (@result_files) {
+      my $dir  = $_->dirname;
+      my $base = $_->basename;
+      (my $newbase = $base) =~ s/^$opts->{ifbase}-// or oops;
+      my $newpath = path($dir)->child($newbase);
+      btw ">> Renaming $_ -> $newpath\n" if $debug;
+      rename ($_, $newpath) or oops "$!";
+      $_ = $newpath; # update @result_files
     }
-  } else {
-    # Move the output file to the desired destination
-    oops unless $_outdir_is_temp;
-    my $thefile = path($opts->{_outdir})->child("$opts->{basename}.$opts->{cvt_to}");
-    unless ($thefile->exists) {
-      system "set -x; ls -la ".qsh($opts->{_outdir})." >&2"; 
-      oops "Expected file not found: ",qsh($thefile);
-    }
-    File::Copy::move($thefile, $opts->{outpath})
-      or die "move to ", _fmt_dirish($opts->{outpath})," failed: $!";
-    btw ">> Removing temp dir ",qsh($opts->{_outdir}),"\n" if $opts->{debug};
-    path($opts->{_outdir})->remove_tree;
-    remove_tree($opts->{_outdir});
   }
 
-  return ($encoding);
+  # Move the results to $dst
+  if (-e $dst) {
+    croak "$dst must be a directory if it pre-exists\n" unless -d $dst;
+    btw ">> Moving results -> $dst\n" if $debug;
+    foreach (@result_files) { 
+      btw ">>> move $_ -> $dst" if $debug;
+      File::Copy::move($_, $dst) 
+    }
+    btw ">> Now $dst contains: ",avis($dst->children) if $debug;
+  } else {
+    if ($opts->{allsheets}) {
+      btw ">> dirmove $tdir -> $dst\n" if $debug;
+      rename($tdir, $dst) or File::Copy::dirmove($tdir, $dst);
+    } else {
+      croak "Expecting only one result file, not @result_files"
+        if @result_files > 1;
+      btw ">> move $result_files[0] -> $dst\n" if $debug;
+      File::Copy::move($result_files[0], $dst);
+    }
+  }
 }
 
-sub _convert_using_gnumeric($) {  # use ssconvert
-  my $opts = shift;
+sub _convert_using_ssconvert($$) {
+  my ($opts, $dst) = @_;
   confess "Deprecated with extreme prejudice"; # no longer supported
-
-  foreach (qw/inpath cvt_to outpath/)
-    { oops "missing opts->{$_}" unless exists $opts->{$_} }
-
-  my $eff_outpath = $opts->{outpath};
-  if (my $prog=which("ssconvert")) {
-    my $enc = _get_encodings_from_opts($opts);
-    $enc //= "UTF-8"; # default
-    my @options;
-    if ($opts->{cvt_to} eq "csv") {
-      push @options, '--export-type=Gnumeric_stf:stf_assistant';
-      my @dashO_terms = ("format=preserve", "transliterate-mode=escape");
-      push @dashO_terms, "charset='${enc}'" if defined($enc);
-      if ($opts->{sheetname}) {
-        push @dashO_terms, "sheet='$opts->{sheetname}'";
-      }
-      if ($opts->{allsheets}) {
-        #If both {allsheets} and {sheetname} are specified, only a single
-        # .csv file will be in the output directory
-        croak "'allsheets' option: 'outpath' must specify an existing directory"
-          unless -d $eff_outpath;
-        $eff_outpath = catfile($eff_outpath, "%s.csv");
-        push @options, "--export-file-per-sheet";
-      }
-      elsif ($opts->{sheetname}) {
-        # handled above
-      }
-      else {
-        # A backwards-incompatible change to ssconvert stopped extracting
-        # the "current" sheet by default; now all sheets are concatenated!
-        # See https://gitlab.gnome.org/GNOME/gnumeric/issues/461
-        # ssconvert verison 1.12.45 supports a new "-O active-sheet=y" option
-  ## PORTABILITY BUG: Redirection syntax will not work on windows
-        my ($ssver) = (qx/ssconvert --version 2>&1/ =~ /ssconvert version '?(\d[\d\.]*)/);
-        if (version::is_lax($ssver) && version->parse($ssver) >= v1.12.45) {
-          push @dashO_terms, "active-sheet=y";
-        } else {
-          croak("Due to an ssconvert bug, a sheetname must be given.\n",
-                "(for more information, see comment at ",__FILE__,
-                " near line ", (__LINE__-10), ")\n");
-        }
-      }
-      push @options, '-O', join(" ",@dashO_terms);
-    }
-    elsif ($opts->{cvt_to} eq 'xlsx') {
-      @options = ('--export-type=Gnumeric_Excel:xlsx2');
-    }
-    elsif ($opts->{cvt_to} eq 'xls') {
-      @options = ('--export-type=Gnumeric_Excel:excel_biff8'); # M'soft Excel 97/2000/XP
-    }
-    elsif ($opts->{cvt_to} =~ /^od/) {
-      @options = ('--export-type=Gnumeric_OpenCalc:odf');
-    }
-    elsif ($eff_outpath =~ /\.[a-z]{3,4}$/) {
-      # let ssconvert choose based on the output file suffix
-    }
-    else {
-      croak "unrecognized cvt_to='".u($opts->{cvt_to})."' and no outpath suffix";
-    }
-
-    my $eff_inpath = $opts->{inpath};
-    if ($opts->{sheetname} && $opts->{inpath} =~ /.csv$/i) {
-      # Control generated sheet name by using a symlink to the input file
-      # See http://stackoverflow.com/questions/22550050/how-to-convert-csv-to-xls-with-ssconvert
-      my $td = catdir($opts->{tempdir} // oops, "Gnumeric");
-      remove_tree($td); mkdir($td) or die $!;
-      $eff_inpath = catfile($td, $opts->{sheetname});
-      symlink $opts->{inpath}, $eff_inpath or die $!;
-    }
-    my @cmd = ($prog, @options, $eff_inpath, $eff_outpath);
-
-    my $suppress_stderr = !$opts->{debug};
-    if (0 != _runcmd({%$opts, suppress_stderr => $suppress_stderr}, @cmd)) {
-      # Before showing a complicated ssconvert failure with backtrace,
-      # check to see if the problem is just a non-existent input file
-      { open my $dummy_fh, "<", $eff_inpath or croak "$eff_inpath : $!"; }
-      my $failmsg = "($$) Conversion of '$opts->{inpath}' to $eff_outpath failed\n"."cmd: ".qshlist(@cmd)."\n";
-      if ($suppress_stderr) {  # repeat showing all output
-        if (0 == _runcmd({%$opts, suppress_stderr => 0}, @cmd)) {
-          warn "Surprise!  Command failed the first time but succeeded on 2nd try!\n";
-        }
-        croak $failmsg;
-      }
-    }
-    elsif (! -e $opts->{outpath}) {
-      croak "($$) Conversion SILENTLY failed\n(using $prog)\n",
-            "  cmd: ",qshlist(@cmd),"\n"
-            ;
-    }
-    return ($enc)
-  }
-  else {
-    croak "Can not find ssconvert to convert '$opts->{inpath}' to $opts->{cvt_to}\n",
-        "To install ssconvert: sudo apt-get install gnumeric\n";
-  }
+##
+##  foreach (qw/inpath cvt_to /)
+##    { oops "missing opts->{$_}" unless exists $opts->{$_} }
+##
+##  my $eff_outpath = $opts->{outpath};
+##  if (my $prog=which("ssconvert")) {
+##    my $enc = _get_encodings_from_opts($opts);
+##    $enc //= "UTF-8"; # default
+##    my @options;
+##    if ($opts->{cvt_to} eq "csv") {
+##      push @options, '--export-type=Gnumeric_stf:stf_assistant';
+##      my @dashO_terms = ("format=preserve", "transliterate-mode=escape");
+##      push @dashO_terms, "charset='${enc}'" if defined($enc);
+##      if ($opts->{sheetname}) {
+##        push @dashO_terms, "sheet='$opts->{sheetname}'";
+##      }
+##      if ($opts->{allsheets}) {
+##        #If both {allsheets} and {sheetname} are specified, only a single
+##        # .csv file will be in the output directory
+##        croak "'allsheets' option: 'outpath' must specify an existing directory"
+##          unless -d $eff_outpath;
+##        $eff_outpath = catfile($eff_outpath, "%s.csv");
+##        push @options, "--export-file-per-sheet";
+##      }
+##      elsif ($opts->{sheetname}) {
+##        # handled above
+##      }
+##      else {
+##        # A backwards-incompatible change to ssconvert stopped extracting
+##        # the "current" sheet by default; now all sheets are concatenated!
+##        # See https://gitlab.gnome.org/GNOME/gnumeric/issues/461
+##        # ssconvert verison 1.12.45 supports a new "-O active-sheet=y" option
+##  ## PORTABILITY BUG: Redirection syntax will not work on windows
+##        my ($ssver) = (qx/ssconvert --version 2>&1/ =~ /ssconvert version '?(\d[\d\.]*)/);
+##        if (version::is_lax($ssver) && version->parse($ssver) >= v1.12.45) {
+##          push @dashO_terms, "active-sheet=y";
+##        } else {
+##          croak("Due to an ssconvert bug, a sheetname must be given.\n",
+##                "(for more information, see comment at ",__FILE__,
+##                " near line ", (__LINE__-10), ")\n");
+##        }
+##      }
+##      push @options, '-O', join(" ",@dashO_terms);
+##    }
+##    elsif ($opts->{cvt_to} eq 'xlsx') {
+##      @options = ('--export-type=Gnumeric_Excel:xlsx2');
+##    }
+##    elsif ($opts->{cvt_to} eq 'xls') {
+##      @options = ('--export-type=Gnumeric_Excel:excel_biff8'); # M'soft Excel 97/2000/XP
+##    }
+##    elsif ($opts->{cvt_to} =~ /^od/) {
+##      @options = ('--export-type=Gnumeric_OpenCalc:odf');
+##    }
+##    elsif ($eff_outpath =~ /\.[a-z]{3,4}$/) {
+##      # let ssconvert choose based on the output file suffix
+##    }
+##    else {
+##      croak "unrecognized cvt_to='".u($opts->{cvt_to})."' and no outpath suffix";
+##    }
+##
+##    my $eff_inpath = $opts->{inpath};
+##    if ($opts->{sheetname} && $opts->{inpath} =~ /.csv$/i) {
+##      # Control generated sheet name by using a symlink to the input file
+##      # See http://stackoverflow.com/questions/22550050/how-to-convert-csv-to-xls-with-ssconvert
+##      my $td = catdir($tempdir // oops, "Gnumeric");
+##      remove_tree($td); mkdir($td) or die $!;
+##      $eff_inpath = catfile($td, $opts->{sheetname});
+##      symlink $opts->{inpath}, $eff_inpath or die $!;
+##    }
+##    my @cmd = ($prog, @options, $eff_inpath, $eff_outpath);
+##
+##    my $suppress_stderr = !$opts->{debug};
+##    if (0 != _runcmd({%$opts, suppress_stderr => $suppress_stderr}, @cmd)) {
+##      # Before showing a complicated ssconvert failure with backtrace,
+##      # check to see if the problem is just a non-existent input file
+##      { open my $dummy_fh, "<", $eff_inpath or croak "$eff_inpath : $!"; }
+##      my $failmsg = "($$) Conversion of '$opts->{inpath}' to $eff_outpath failed\n"."cmd: ".qshlist(@cmd)."\n";
+##      if ($suppress_stderr) {  # repeat showing all output
+##        if (0 == _runcmd({%$opts, suppress_stderr => 0}, @cmd)) {
+##          warn "Surprise!  Command failed the first time but succeeded on 2nd try!\n";
+##        }
+##        croak $failmsg;
+##      }
+##    }
+##    elsif (! -e $opts->{outpath}) {
+##      croak "($$) Conversion SILENTLY failed\n(using $prog)\n",
+##            "  cmd: ",qshlist(@cmd),"\n"
+##            ;
+##    }
+##    return ($enc)
+##  }
+##  else {
+##    croak "Can not find ssconvert to convert '$opts->{inpath}' to $opts->{cvt_to}\n",
+##        "To install ssconvert: sudo apt-get install gnumeric\n";
+##  }
 }
 
 # Extracts |||SHEETNAME or !SHEETNAME or [SHEETNAME] from a path+sheet
@@ -766,97 +800,29 @@ sub form_spec_with_sheetname($$) {
   #$sheetname ? "${filepath}|||${sheetname}" : $filepath
 }
 
-# Convert between spreadsheet and CSV file (either direction),
-#   handling pre-opened input, non-seekable input, and no-op conversions
-#
-# INPUT ARGUMENTS: inpath, optname => value ...
-#   inpath                         A pathname string or pre-opened filehandle;
-#                                    If not seekable, data is copied to a
-#                                    temp file (auto-removed at process exit).
-#
-#   cvt_from => "csv"|"xls"|...    Input file format;
-#                                    Auto-detected if missing or empty.
-#
-#   cvt_to => "csv"|...            Output file format; required unless
-#                                    <outpath> is specified with a
-#                                    recognized .suffix
-#
-#   sheetname => "sheetname"       Specifies which sheet if inpath is a
-#                                    spreadsheet file; may also be given
-#                                    as a suffix within <inpath> using any of
-#                                    several forms (for historical reasons):
-#                                    !sheetname or [sheetname] or |||sheetname
-#
-#   allsheets => BOOLEAN           If true, every sheet in a spreadsheet is
-#                                    converted to a corresponding csv in an
-#                                    output *directory* [valid only with
-#                                    cvt_to => "csv"]
-#
-#   iolayers => "..."              Perl open() I/O layers specifier for
-#                                    reading/writing CSV files e.g.
-#                                    ":perlio:encoding(utf8)"; auto-detected
-#                                    if necessary for input CSVs.
-#
-#   outpath => "..."               Usually omitted. If specified, the results
-#                                    are written to the specified path.
-#                                    If NOT specified, results are written to
-#                                    a temporary file which is auto-removed at
-#                                    process exit, or if no conversion is
-#                                    needed (and the input is seekable) then
-#                                    the original input is returned.
-#                                    May *not* be specified if conversion
-#                                    might be unnecessary.
-#
-#                                    With allsheets => true, outpath is a
-#                                    *directory* in which a csv file for each
-#                                    sheet will be created.
-#   tempdir => "/tmp" or whatever
-#   verbose => bool
-#   debug => bool
-#
-# RETURNS:
-#   {
-#     cvt_from  => as specified or defaulted/auto-detected
-#     cvt_to    => ditto
-#     iolayers  =>
-#     inpath    => as spec. or a tempfile copy if input isn't seekable
-#     sheetname => actual sheet name read or created in spreadsheet
-#     outpath   => where the result is; if <outpath> was specified
-#                  in the args then result is always written there,
-#                  otherwise could be a temp file (auto-removed
-#                  at process exit) or the same as <inpath> if no
-#                  conversion was needed.
-#     verbose & debug => as specified
-#   }
-sub _process_args($;@) { # returns (key => value, ...)
-  confess "fix obsolete call to pass linearized options" if ref($_[0]) && !blessed($_[0]);
-  my $separate_inpath;
-  if (scalar(@_) % 2) { # odd number of args
-    # Treat an initial or singular arg as inpath
-    # TODO: Consider eliminating this API and require only key => value pairs
-    #   THAT WOULD BE AN INCOMPATIBLE API RELEASE!
-    $separate_inpath = shift;
-  }
+our $default_input_encodings = "UTF-8,windows-1252";
+our $default_output_encoding = "UTF-8";
+
+# Return digested %opts setting
+#   sheetname, inpath_sans_sheet (as Path::Tiny), encoding or default
+sub _process_args($;@) {
+  confess "fix obsolete call to pass linearized options" 
+    if ref($_[0]) eq "HASH";
+  my $leading_inpath = ( scalar(@_) % 2 == 1 ? shift(@_) : undef );
   my %opts = (
-              iolayers => "",
               cvt_from => "",
               cvt_to => "",
-              ##stdout_to_stderr => 1,  # see &_runcmd()
               @_,
               #verbose => 999, tempdir => "/tmp/J",
             );
   if (defined $opts{inpath}) {
     croak "Initial INPATH arg specified as well as inpath => ... in options"
-      if defined $separate_inpath;
+      if defined $leading_inpath;
   } else {
-    $opts{inpath} = $separate_inpath;
+    $opts{inpath} = $leading_inpath // croak "No inpath was specified";
   }
-  $opts{inpath} //= $separate_inpath; 
   $opts{verbose}=1 if $opts{debug};
-  if (exists $opts{encoding}) {
-    Carp::cluck "Using OBSOLETE csv 'encoding' opt (use iolayers => \":encoding(...)\" instead)\n";
-    $opts{iolayers} .= ":encoding(". delete($opts{encoding}) .")";
-  }
+
   # inpath or outpath may have "!sheetname" appended (or alternate syntaxes),
   # but may exist only if a separate 'sheetname' option is not specified.
   # Input and output can not both be spreadsheets; one must be a CSV.
@@ -865,428 +831,295 @@ sub _process_args($;@) { # returns (key => value, ...)
     croak "Both {sheet} and {sheetname} specified" if exists $opts{sheetname};
     $opts{sheetname} = delete $opts{sheet};
   }
-  { my ($sheet_from_path, $key_with_sn);
-    for my $key ('inpath', 'outpath') {
-      my $spec = $opts{$key} || next;
-      next if openhandle($spec);
-      # Split filepath!sheetname  etc.
-      if (my $sn = sheetname_from_spec($spec)) {
-        croak "Both $key_with_sn and $key specify a sheetname embedded in path"
-          if $key_with_sn;
-        ($sheet_from_path, $key_with_sn) = ($sn, $key);
-      }
+  { my ($path_sans_sheet, $sheetname, $key);
+    for my $thiskey ('inpath', 'outpath') {
+      my $spec = $opts{$thiskey} || next;
+      my ($pssn, $sn) = sheetname_from_spec($spec);
+      croak "Both $thiskey and $key specify a sheetname embedded in path"
+        if $sheetname;
+      ($path_sans_sheet, $sheetname, $key) = ($pssn, $sn, $thiskey);
     }
     if ($opts{sheetname}) {
-      croak "{sheetname} option conflicts with sheetname embedded in path\n",
-            "   opt sheetname => ", qsh($opts{sheetname}),"\n",
-u           "   $key_with_sn is ", qsh($opts{$key_with_sn}),"\n"
-        if defined($sheet_from_path) && $sheet_from_path ne $opts{sheetname};
+      croak "'sheetname' option conflicts with embedded sheet name\n",
+            "   sheetname => ", qsh($opts{sheetname}),"\n",
+            "   $key => ", qsh($opts{$key}),"\n"
+        if defined($sheetname) && $sheetname ne $opts{sheetname};
     }
-    elsif (defined $sheet_from_path) {
-      btw "(extracted sheet name \"$sheet_from_path\" from $key_with_sn)\n"
+    elsif (defined $sheetname) {
+      btw "(extracted sheet name \"$sheetname\" from $key)\n"
         if $opts{verbose};
-      $opts{sheetname} = $sheet_from_path;
+      $opts{sheetname} = $sheetname;
     }
+    $opts{inpath_sans_sheet} = path(
+      ($key && $key eq 'inpath') ? $path_sans_sheet : $opts{inpath}
+    );
   }
-  unless (openhandle($opts{inpath})) {
-    $opts{inpath_sans_sheet} = filepath_from_spec $opts{inpath};
-  }
+  # Input file basename sans any .suffix
+  $opts{ifbase} = $opts{inpath_sans_sheet}->basename(qr/\.[^.]+/);
+
   %opts
+}#_process_args
+
+# Extract the of encoding(s) specified in an iolayers string
+# Parse iolayers string, returning ($prefix,[encodings],$suffix) 
+# For example from ":raw:encodings(utf8,windows-1252):zz" the output
+# would be (":raw", [:utf8","windows-1252"], ":zz")
+sub _parse_iolayers($) {
+  local $_ = (shift) // "";
+  /\A(<prefix>.*?)
+     (<encspec>:utf8|:encoding\(([^\)]+)\))
+     (<suffix>.*?)\z/ or croak "Invalid iolayers spec '$_'\n";
+  (my $prefix, $_, my $suffix) = ($+{prefix}, $+{encspec}, $+{suffix});
+  /^:(utf8)$/ || /^:encoding\(([^\)]+)\)$/ or oops($_);
+  my $enclist = [split /,/, $1]; # comma,separated,list,of,encodings
+  ($prefix, $enclist, $suffix);
 }
-sub _detect_to_from($) { # updates %$opts and returns the effective inpath
+
+# Detect cvt_to and input_encoding if a csv; 
+# Detect cvt_to and set default output_encoding if not specified
+sub _determine_enc_tofrom($) {
   my $opts = shift;
   unless ($opts->{cvt_to}) {
     if ($opts->{outpath} && $opts->{outpath} =~ /\.([&.]+)$/) {
       $opts->{cvt_to} = $1;
     }
-    croak "cvt_to was not specified and can not be intuited from outpath"
+    croak "'cvt_to' was not specified and can not be intuited from 'outpath'"
       ,dvis('\n### $opts')  ###TEMP
       unless $opts->{cvt_to};
   }
   unless ($opts->{cvt_from}) {
-    if ($opts->{inpath_sans_sheet} && $opts->{inpath_sans_sheet} =~ /\.([&.]+)$/) {
+    if ($opts->{inpath_sans_sheet} 
+                          && $opts->{inpath_sans_sheet} =~ /\.([^.]+)$/) {
       $opts->{cvt_from} = $1;
       $opts->{cvt_from} =~ s/^\.txt$/.csv/i;
-    }
+    } 
   }
-  my $eff_inpath = $opts->{inpath_sans_sheet};
-  if (!$opts->{cvt_from}
-      ||
-      $opts->{cvt_from} eq "csv" && !defined( _get_encodings_from_opts($opts) )
-     )
-  {
-    # Peek at the data to auto-detect a CSV file, or if known to be CSV
-    # then auto-detect the encoding if the encoding was not specified.
-    my $fh;
-    if (openhandle($opts->{inpath})) {
-      open $fh, "<&", $opts->{inpath} or croak "dup $opts->{inpath} : $!\n";
-    } else {
-      open $fh, "<", $opts->{inpath_sans_sheet} 
-        or croak "$opts->{inpath_sans_sheet} : $!";
-    }
-    my $octets = _slurp_binary_file($fh);
-    my $empty = length($octets)==0;
-
-    if (! _is_seekable($fh) or $empty) { ### WHY or $empty ???
-      # Make a copy if we won't be able to re-read the input later 
-      $eff_inpath = _write_binary_tempfile($octets, $opts);
-    }
-
-    if ($opts->{cvt_from}) {
-      if ($opts->{cvt_from} eq "csv") {
-        _update_iolayers($octets, $opts); # auto-detect or verify encoding
-      }
-    } else {
-      # Auto-detect CSV by looking for comma-separated fields; but first
-      # try to decode characters, which may fail if it is not really a CSV.
-      eval { local $opts->{debug}=0;           # don't need to see decode errs
-             _update_iolayers($octets, $opts); # auto-detect encoding
-           };
-      if (! $@) {
-        # No decode errors occurred in check above, so assume it is a text file
-        # N.B. _update_iolayers set $opts->{iolayers} with encoding.
-        my $enc = _get_encodings_from_opts($opts) // croak dvis '%$opts';
-        my $chars = decode($enc, $octets, Encode::FB_CROAK|Encode::LEAVE_SRC);
-        # Does the data look like a csv file?
-        my $min_cols_minus1 = 3 - 1;
-        if ($chars =~ /\A(?:.*?,){$min_cols_minus1,}(.*?)[\x{0A}\x{0D}]/s
-             or $empty) {
-          warn "Presuming \"$opts->{inpath}\" contains CSV data\n"
-            if $opts->{verbose};
-          $opts->{cvt_from} = 'csv';
+  # If we don't know what the input format is, or we do know it's CSV but
+  # don't know its encoding, examine the file content to figure it out.
+  if (!$opts->{cvt_from} || $opts->{cvt_from} eq "csv") {
+    my $octets;
+    $opts->{input_encoding} //= $default_input_encodings;
+    my @enclist = split m#,#, $opts->{input_encoding};
+    if (@enclist > 1) {
+      $octets = $opts->{inpath_sans_sheet}->slurp_raw;
+      for my $enc (@enclist) {
+        eval { decode($enc, $octets, Encode::FB_CROAK|Encode::LEAVE_SRC) };
+        if ($@) {
+           btw "Encoding '$enc' did not work...($@)\n" if $opts->{debug};
+           next;
         }
-        # else: It seems to be a text file but is not a CSV !
+        btw "Encoding '$enc' seems to work.\n" if $opts->{debug};
+        @enclist = ($enc);
+        last
       }
+      #croak "Could not detect encoding of $opts->{inpath_sans_sheet}\n" 
+      confess "Could not detect encoding of $opts->{inpath_sans_sheet}\n" 
+        if @enclist > 1;
     }
+    $opts->{input_encoding} = $enclist[0];
     if (!$opts->{cvt_from}) {
-      # It must be some kind of spreadsheet.
-      if (openhandle($eff_inpath)) {
-        seek $eff_inpath, 0, SEEK_SET or die "seek $eff_inpath : $!"
+      $octets //= $opts->{inpath_sans_sheet}->slurp_raw;
+      my $chars = decode($opts->{input_encoding}, $octets, Encode::FB_CROAK);
+      # Does it look like a csv file?
+      # This is not at all correct, e.g. doesn't know about "quoted" fields,
+      # but merely screens for total garbage
+      my $min_cols_minus1 = 3 - 1;
+      if ($chars =~ /\A(?:.*?,){$min_cols_minus1,}[^,]*[\x{0A}\x{0D}]/s
+          ||
+          $chars =~ /\A(?:.*?\t){$min_cols_minus1,}[^\t]*[\x{0A}\x{0D}]/s
+          ||
+          length($octets)==0) {
+        $opts->{cvt_from} = 'csv';
+      } else {
+        croak "Can not detect what kind of file ",qsh($opts->{inpath})," is\n";
       }
     }
   }
-  return $eff_inpath;
-}#_detect_to_from
+  $opts->{output_encoding} //= $default_output_encoding
+    if $opts->{cvt_to} eq "csv";
+}#_determine_enc_tofrom
 
-sub _openlibre_features() {
-  state $hash;
-  return $hash if defined $hash;
-  my $prog = _openlibre_path() // croak "Libre/Open Office not found";
-  my ($s) = (qx/$prog --version/ =~ /Libre.*? (\d+\.[\d\.]*)/);
-  my $version = version->parse("v".($s//"0.1"));
-  $hash = {
-    # LibreOffice 7.2 allows extracting all sheets at once
-    allsheets => ($version >= version->parse("v7.2")),
-    # ...but not yet extracting a single sheet by name.
-    # https://bugs.documentfoundation.org/show_bug.cgi?id=135762#c24
-    named_sheet => 0,
+sub _tool_extract_all_csvs($$) {
+  my ($opts, $destdir) = @_;
+  delete local $opts->{sheetname};
+  local $opts->{allsheets} = 1;
+  if (_openlibre_supports_allsheets()) {
+    _convert_using_openlibre($opts, $destdir);
+  }
+  elsif (_ssconvert_supports_all_sheets()) {
+    _convert_using_ssconvert($opts, $destdir);
+  }
+  else { croak "No can do.  Please install LibreOffice 7.2 or newer" }
+}
+
+sub _tool_can_extract_one_csv() { 
+  _openlibre_supports_named_sheet() || _ssconvert_supports_named_sheet() 
+}
+sub _tool_extract_one_csv($$) {
+  my ($opts, $destpath) = @_;
+  confess "should not get here"; # unless we restore ssconvert support
+}
+
+# Extract CSVs for every sheet into {outpath} (setting to tmpdir if not preset).
+# If cached CSVs are available they are moved into {outpath}/ .
+sub _extract_all_csvs($) {
+  my $opts = shift;
+  my $outpath = _final_outpath($opts);
+  $outpath->mkpath; # nop if exists, croaks if conflicts with file
+
+  _tool_extract_all_csvs($opts, $outpath); #logs
+}
+
+# Extract a specified sheet into a CSV at {outpath} (defaulting to temp file).
+# If a cached CSV is available it is moved to {outpath}.
+sub _extract_one_csv($) {
+  my $opts = shift;
+
+  my $outpath = _final_outpath($opts);
+  $outpath->remove unless -d $outpath;
+
+  my $cachedirpath = _cachedir($opts);
+  my $fname = $opts->{sheetname}.".csv";
+  my $cached_path = $cachedirpath->child($fname);
+  if (-e $cached_path) {
+    warn "> Moving cached $fname to $outpath\n" if $opts->{verbose};
+    File::Copy::move($cached_path, $outpath);
+  }
+  elsif (_tool_can_extract_one_csv()) {
+    _tool_extract_one_csv($opts, $opts->{outpath}); #logs
+  } 
+  else {
+    warn ">>Emulating extract-by-name by extracting all csvs into cache...\n"
+      if $opts->{debug};
+    $cachedirpath->remove_tree;
+    $cachedirpath->mkpath;
+    { local $opts->{verbose} = 0;
+      #local $opts->{debug} = 0;
+      _tool_extract_all_csvs($opts, $cachedirpath);
+    }
+    __SUB__->($opts);
   }
 }
-sub _openlibre_supports_allsheets() { _openlibre_features()->{allsheets} }
-sub _openlibre_supports_named_sheet() { _openlibre_features()->{named_sheet} }
 
-sub convert_spreadsheet(@); # forward
-sub _emulate_by_sheet_name($) {
-  my %opts = %{ $_[0] };
-  # Emulate extracting a single sheet by name by extracting all sheets
-  # and discarding all but the one we want
-  oops "recursion?" if u($opts{outpath}) =~ /EMULATE/;
-  warn ">>Emulating extract-by-name by extracting all...\n" 
-    if $opts{verbose};
-  #btw dvis('%opts\n') if $opts{debug};
-  my %topts = %opts;
-  delete @topts{qw/sheetname inpath_sans_sheet existing_in_outpath/};
-  $topts{inpath} = $opts{inpath_sans_sheet} 
-    unless openhandle($opts{inpath});
-  $topts{allsheets} = 1;
-  $topts{outpath} = _mk_tempsubdir(\%opts, "_EMULATE-BY-NAME");
-  unless ($opts{debug}) {
-    $topts{silent} = 1;
-    $topts{verbose} = $topts{debug} = 0;
-  }
-  my $hash = convert_spreadsheet(%topts) // oops;
-
-  my @matches = grep{ /$opts{sheetname}\.csv$/ } 
-                map{$_->basename} path($topts{outpath})->children;
-  oops dvis '@matches\n$topts' unless @matches==1;
-  my $thepath = catfile($topts{outpath}, $matches[0]);
-  $opts{outpath} //= catfile($opts{tempdir}, $matches[0]);
-  btw ">> move ",qsh($thepath)," -> ",qsh(_fmt_dirish $opts{outpath}),"\n"
-    if $opts{debug};
-  File::Copy::move( $thepath, $opts{outpath} )
-    or die "move of $thepath failed ($!)";
-  btw ">> Removing intermediate dir ",qsh($topts{outpath}),"\n" 
-    if $opts{debug};
-  remove_tree($topts{outpath}) or die "$topts{outpath} : $!";
-  $hash->{sheetname} = $opts{sheetname};
-  $hash->{outpath}   = $opts{outpath};
-  return $hash
+# If {outpath} is not set, set it to a unique temporary path in $tempdir
+#
+# This is *not* a "tempfile" or "tempdir" object which auto-destructs,
+# in fact it does not even exist yet and we don't know here which it will be.  
+# Either the user must remove it when they are done with it, or it will 
+# be removed when $tempdir is removed a process exit.
+#
+# Always returns {outpath} as a Path::Tiny object.
+sub _final_outpath($) {
+  my $opts = shift;
+  $opts->{outpath} ? path($opts->{outpath}) : ($opts->{outpath} = do{
+     my $base = $opts->{ifbase}
+                .($opts->{sheetname} ? "_$opts->{sheetname}" : "");
+     # Collisions occur when recursing to emulate Extract-by-name,
+     # or if the user repeatedly reads the same exact thing
+     state %memory;
+     if ($memory{$base}++) {
+       $base .= $memory{$base};  # sequence number
+     }
+     $tempdir->child("${base}.$opts->{cvt_to}")
+  });
 }
 
 sub convert_spreadsheet(@) {
+  # Set inpath_sans_sheet, sheetname, ifbase, etc.
   my %opts = &_process_args;
   my %input_opts = %opts;
+  btw dvis('>>> convert_spreadsheet %opts\n') if $opts{debug};
 
-  btw dvis('>>> convert_spreadsheet %input_opts\n') if $opts{debug};
-  
-  my sub _fmt_outpath_content($) {
-    my $outpath = $_[0]->{outpath} // oops;
-    return "" unless -d $outpath;
-    "\n  outpath contains: "
-           .join(", ",map{qsh basename $_} path($outpath)->children);
-  }
+  _get_exclusive_lock(\%opts);
+  scope_guard { _release_lock(\%opts); };
 
-  # FIXME sorta-BUG HERE:
-  #   Should re-use the same tempdir (?) to avoid proliferation of tempdirs
-  #   if many spreadsheets are read by the same process?  We can only remove
-  #   a {tempdir} at process exit because it may contain a result file
-  #   returned in {outpath}.
-  #
-  #   If we re-use the same {tempdir} then must ensure unique generated names!
-  #
-  # RELATED QUESTION:
-  #   Should we return a self-deleting Path::Tiny::tempfile object in outpath?
-  #
-  #$opts{tempdir} //= File::Temp::tempdir("/tmp/spread_XXXXXX", CLEANUP=>1);
-  
-  # Re-use the same tempdir for the duration of this process, to avoid
-  # proliferation when multiple calls are made.  {tempdir} is removed at
-  # process exit unless the user specified {tempdir}.
-  #
-  # THREAD SAFETY: {outpath} should ALWAYS be specified when not using
-  #   the 'allsheets' option, becuase temporary *files* are not atomically
-  #   created and so threads might race (temp *directories* are atomically
-  #   created, so the result of `allsheets` should be thread-safe).
-  #
-  # FIXME: Should we pre-create temp files and then *copy* data into them
-  #   if the underlying utility can't over-write an existing file???
-  #   Or is it better to create a unique temp subdir for the output file
-  #   and return a file in it, or atomically move the file up before rtn or ???
-  #
-  state $tempdir;
-  $opts{tempdir} 
-    //= ($tempdir //= File::Temp::tempdir("/tmp/spread_XXXXXX", CLEANUP=>1));
-  # NOTE: _mk_tempsubdir() and _temp_filename() handle clashes with existing 
+  _create_tempdir_if_needed(\%opts);
 
-  my $eff_inpath = _detect_to_from(\%opts); # could be an open fh
-#btw dvis '# # #AAA $eff_inpath\n%opts';
+  _determine_enc_tofrom(\%opts); # intuit cvt_from & cvt_to if possible
+  # Now {input_encoding} and {output_encoding} are set
 
-  my $inpathish = $opts{inpath_sans_sheet} // $opts{inpath}; 
-  { my $ifbase = path($inpathish)->basename(qr/\.[^.]+/);
-    # If inpathish is a file handle it will stringify like "GLOB(0xabcdef...)"
-    $ifbase =~ s/[^-.,;= \w]/_/g; # make it acceptable as part of a filename
-    $opts{basename} = $ifbase;
-  }
-  my $outpath_isdir;
+  croak "Either input or output must be 'csv'\n"
+    unless $opts{cvt_from} eq 'csv' || $opts{cvt_to} eq 'csv';
   if ($opts{allsheets}) {
-    if ($opts{sheetname}) {
-      croak "With 'allsheets', a sheet name may not be specified\n";
-    }
-    $opts{outpath} //= catfile($opts{tempdir}, $opts{basename});
-    if (-e $opts{outpath}) {
-      croak "With allsheets, a pre-existing outpath must be a directory" 
-        unless -d _;
-    } else {
-      mkdir $opts{outpath} or croak "mkdir $opts{outpath} : $!";
-    }
-    warn "> Extracting sheets from $opts{cvt_from} ",qsh($opts{inpath}),
-          " into ",qsh($opts{outpath}),"/*.$opts{cvt_to}\n"
-      if $opts{verbose};
-    $outpath_isdir = 1;
-  } else {
-    $outpath_isdir = defined($opts{outpath}) && -d $opts{outpath};
-    $opts{outpath} //= catfile($opts{tempdir}, 
-                 ($opts{sheetname} || $opts{basename}).".".$opts{cvt_to});
-    # Will store single result inside directory {outpath} if it pre-exists
-    warn "> Converting $opts{cvt_from} ",
-          qsh(form_spec_with_sheetname($inpathish, $opts{sheetname})),
-          " to $opts{cvt_to} ", qsh(_fmt_dirish $opts{outpath}), "\n"
-      if $opts{verbose};
-  }
-  if ($outpath_isdir) {
-    $opts{existing_in_outpath} = {
-      map{($_ => 1)} path($opts{outpath})->children
-    };
+    croak "'allsheets' is allowed only with cvt_to => 'csv'"
+      unless ($opts{cvt_to}//"") eq "csv";
+    croak "With 'allsheets', a sheet name may not be specified\n"
+      if $opts{sheetname};
+    croak "With 'allsheets', 'outpath' must be a directory if it exists\n"
+      if $opts{outpath} && -e $opts{outpath} && ! -d _;
   }
 
-  if ($opts{cvt_from} eq $opts{cvt_to}) {
-    # Special case #1: No conversion is needed: Just copy the file or 
-    #   return the input path itself (or a seekable temp copy) as the output
+  my $done;
+  if ($opts{cvt_from} eq $opts{cvt_to}) {  # csv to csv
     if (!$opts{allsheets}) {
-      if (defined $opts{outpath}) {
-        warn "  No conversion needed, copying to ", 
-              qsh(_fmt_dirish $opts{outpath}),"\n"
-          if $opts{verbose};
-        File::Copy::copy($eff_inpath, $opts{outpath});
+      if ($opts{input_encoding} ne $opts{output_encoding}) {
+        # Special case #1: in & out are CSVs but different encodings.
+        warn "> Transcoding csv -> csv\n" if $opts{debug};
+        my $octets = $opts{input_sans_sheet}->slurp_raw;
+        my $chars = decode($octets, $opts{input_encoding}, Encode::FB_CROAK);
+        $octets = encode($chars, $opts{output_encoding}, Encode::FB_CROAK);
+        path(_final_outpath(\%opts))->spew_raw($octets);
+        $done = 1;
       } else {
-        $opts{outpath} = $eff_inpath; # possibly a temp copy
-        warn "  No conversion needed, returning ", qsh($opts{outpath}),"\n"
-          if $opts{verbose};
-      }
-    }
-    # Special case #2: <allsheets> with input already a csv:
-    #   Leave a symlink to the input in the <outpath> directory.
-    elsif ($opts{allsheets}) {
-      if ($opts{cvt_to} eq "csv") {
-        my $linktarget = abs2rel($eff_inpath, $opts{outpath});
-        my $linkpath = path($opts{outpath})->child(path($inpathish)->basename);
-        symlink($linktarget, $linkpath) or croak "symlink $linkpath : $!";
-        warn "  No conversion needed, leaving symlink to input at ", qsh($linkpath),"\n"
-          if $opts{verbose};
-      } else {
-        croak "{allsheets} not supported with cvt_to=",vis($opts{cvt_to});
+        # Special case #2: No conversion is needed: Just copy the file or 
+        #   return the input path itself as the output
+        if (defined $opts{outpath}) {
+          warn "> No conversion needed, copying to ",qsh($opts{outpath}),"\n"
+            if $opts{verbose};
+          $opts{inpath_sans_sheet}->copy($opts{outpath});
+          $done = 1;
+        } else {
+          $opts{outpath} = $opts{inpath_sans_sheet};
+          warn "> No conversion needed, returning ", qsh($opts{outpath}),"\n"
+            if $opts{verbose};
+          $done = 1;
+        }
       }
     }
     else {
-      oops dvis '%opts'
-    }
-  }
-  else {
-    # 5/12/2023: Formerly we used gnumeric unless specifically told otherwise.
-    # Now that we have a fix for concurrency (separate $UserInstallation dirs)
-    # and now that LO (v7.2) supports "allsheets" mode we use LO for everything
-    # which obviates the need to install gnumeric, which is not supported
-    # on non-*ix platforms.  Currently the gnumeric code is stale...
-    croak "'use_gnumeric' is no longer supported\n" if $opts{use_gnumeric};
-
-    $opts{use_gnumeric} //=
-            ( $opts{allsheets} && !_openlibre_supports_allsheets() )
-         #We emulate named_sheet with allsheets...
-         #|| ( $opts{sheetname} && !_openlibre_supports_named_sheet() );
-         || ( $opts{sheetname} && !_openlibre_supports_allsheets() );
-       
-    if ($opts{cvt_to} eq "csv" && defined($opts{sheetname}) 
-        && !_openlibre_supports_named_sheet()
-        && _openlibre_supports_allsheets()
-       ) {
-      my $hash =_emulate_by_sheet_name(\%opts);
-      log_call [\%input_opts,\"(emulated single-sheet extract)"],
-               [$hash, \_fmt_outpath_content($hash)] 
+      # Special case #2: <allsheets> with input already a csv:
+      #   Leave a symlink to the input in the <outpath> directory.
+      croak "transcoding not impl in this situation"
+        if ($opts{input_encoding} ne $opts{output_encoding});
+      my $outpath = path(_final_outpath(\%opts));
+      $outpath->mkpath; # nop if exists, croaks if conflicts with file
+      my $dest = $outpath->child( $opts{ifbase}.".csv" );
+      symlink($opts{inpath_sans_sheet}, $dest)
+        or croak "symlink $opts{inpath_sans_sheet} <-- $dest : $!";
+      warn "  No conversion needed! Leaving symlink at ", qsh($dest),"\n"
         if $opts{verbose};
-      return $hash;
+      $done = 1;
     }
-
-    # Prevent concurrent conversions of different documents (e.g. in pipeline)
-    # (Open/Libre Office have bugs which prevent this)
-    open (my $lock_fh, "+>>", $lockfile_path) or die $!;
-    chmod 0666, $lock_fh;
-    scope_guard {
-      truncate($lock_fh,0);
-      flock($lock_fh, LOCK_UN) or die "flock UN: $!";
-    };
-    if (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
-      seek($lock_fh,0,SEEK_SET) or die;
-      (my $owner = do{ local $/; <$lock_fh> }) =~ s/\s*\z//s;
-      {
-        last unless $owner =~ /pid (\d+)/;
-        last unless my @s = stat("/proc/$1");
-        last unless my @pw = getpwuid($s[4]);
-        $owner = $pw[0]." ".$owner; # user name
+  }
+  if (! $done) {
+    if ($opts{allsheets}) {
+      _extract_all_csvs(\%opts);
+    } 
+    else {
+      # Result will be a single file.
+      if ($opts{cvt_to} eq "csv") {
+        _extract_one_csv(\%opts);
+      } else {
+        _write_spreadsheet(\%opts);
       }
-      warn ">> ($$) Waiting for exclusive lock owned by $owner to convert spreadsheet...\n";
-      flock($lock_fh, LOCK_EX) or die "flock: $!";
     }
-    print $lock_fh "pid $$ ($progname)\n"; # always appends
-
-    $opts{use_gnumeric} = 0 if $opts{col_formats}; # must use libreoffice
-
-    my $encoding;
-    if ($opts{use_gnumeric}) {
-      croak "{col_formats} is not supported by gnumeric" if $opts{col_formats};
-      ($encoding) = _convert_using_gnumeric(\%opts);
-    } else {
-      ($encoding) = _convert_using_openlibre(\%opts);
-    }
-    oops unless -r $opts{outpath};
-
-    $opts{iolayers} = ":encoding($encoding)" if defined($encoding);
   }
-
-  my $retval = {
-    map{ ($_ => $opts{$_}) }
-    grep{ defined $opts{$_} }
-    qw(inpath sheetname outpath iolayers cvt_from cvt_to verbose debug)
+  my $result = {
+    defined($opts{output_encoding}) ? (encoding => $opts{output_encoding}):(),
+    inpath_sans_sheet => $opts{inpath_sans_sheet}->stringify,
+    (map{ ($_ => $opts{$_}) } grep{ defined $opts{$_} }
+        qw/outpath cvt_from cvt_to sheetname/)
   };
-  log_call [\%input_opts], [$retval, \_fmt_outpath_content($retval)]
+  log_call [\%input_opts], [$result, \_fmt_outpath_contents($result)]
     if $opts{verbose};
-  $retval;
-}
 
-# Extract encoding(s) from {encoding} or {iolayers}
-#   If multiple encodings (to try, in order) are specified,
-#   then in scalar context the *first* one is returned.
-# Returns () or undef if no encodings are specified
-sub _get_encodings_from_opts($) {
-  my $opts = shift;
-  my ($enclist) = ($opts->{iolayers} =~ /(?:^|:)encoding\(([^()]*)\)/);
-  $enclist //= $opts->{encoding};
-  unless ($enclist) {
-    return wantarray ? () : undef
-  }
-  if ($opts->{encoding} && $opts->{encoding} ne $enclist) {
-    croak "BUG: Incompatible opts{encoding}='$opts->{encoding}' and {iolayers}='$opts->{iolayers}'"
-  }
-  my @enclist = split /,/, $enclist;
-  wantarray ? @enclist : $enclist[0];
-}
-
-# $opts may specify none, one, or multiple encoding options; if none are
-# specified then a default list is used, so this should always succeed
-# by default if the data is UTF-8.
-#
-# Each encoding is tried on the sample data and the first which works is
-# returned.  An exception is thrown if none work.
-sub _detect_encoding($$) {
-  my ($octets, $opts) = @_; croak "Undef input" unless defined $octets;
-
-  my @enclist = _get_encodings_from_opts($opts);
-  @enclist = ("UTF-8","windows-1252") if @enclist==0; # guessed default
-
-  foreach my $enc (@enclist) {
-    eval { decode($enc, $octets, Encode::FB_CROAK|Encode::LEAVE_SRC) };
-    if ($@) {
-       btw "Encoding '$enc' did not work...($@)\n" if $opts->{debug};
-       next;
-    }
-    btw "Encoding '$enc' seems to work.\n" if $opts->{debug};
-    return $enc;
-  }
-  croak "None of the encodings \"",join(",",@enclist),"\" are correct!\ninpath: ",qsh($opts->{inpath}),"\n"
-}
-
-sub _update_iolayers($$) {
-  # MODIFIES $opts->{iolayers} to specify a single encoding, and crlf option
-  my ($octets, $opts) = @_; croak "Undef input" unless defined $octets;
-  my $orig = $opts->{iolayers};
-
-  my $encoding = _detect_encoding($octets, $opts); # dies if unrecognizable
-
-  my $lineend_layer;
-  # N.B. Final line may be missing newline (e.g. downloads from Google Docs)
-  if ($octets =~ /\x0d\x0a/) {
-    $lineend_layer = ":crlf";
-  }
-  elsif ($octets =~ /\x0a/) {
-    $lineend_layer = ":perlio";  # Force UNIX line endings, see perldoc PerlIO
-  }
-  elsif (length($octets) == 0) {
-    $lineend_layer = ":perlio";  # Doesn't really matter for an empty file
-  }
-  else {
-    croak u($opts->{inpath})," : Could not detect line ending convention. File ends with: ",
-            join( "", map{ sprintf " 0x%02X", ord($_) }
-                      split //,substr($octets,-40) ),
-            "\n";
-  }
-
-  $opts->{iolayers} =~ s/(^|:)( encoding\([^()]*\) | crlf | raw )//gx;
-  $opts->{iolayers} =~ s/^/"${lineend_layer}:encoding($encoding)"/e;
-  btw "_update_iolayers (l",(caller)[2],") ",
-               "'",u($orig),"' -> '$opts->{iolayers}'\n" if $opts->{debug};
-}
-
+  $result;
+}#convert_spreadsheet
 
 # Open as a CSV, intuiting input encoding, converting spreadsheet if necessary.
+#
+# The :crlf will be used, which translates DOS CR,LF to \n while passing
+# *nix bare LF through unmolested.
 #
 # Input argument(s) are the same as for convert_spreadsheet (except
 # outpath may not be specified).
@@ -1297,37 +1130,31 @@ sub OpenAsCsv {
               (@_ == 1 ? (inpath => $_[0]) : (@_)),
               cvt_to => 'csv',
             );
-  # TODO: Rename {path} to {inpath} in all usages and rm this cruft:
+  # TODO: Rename {path} to {inpath} in all usages and rm this cruft;
+  # TODO: Consider renaming {inpath} as {input} bc it can be a filehandle
+  #   (massive changes required; in some contexts it must be a path...)
   carp "Obsolete OpenAsCsv usage: Change path to inpath\n"
     if exists($opts{path}) and !$opts{silent};
   $opts{inpath} //= delete $opts{path}; # be compatible with old API 
 
-  # TODO: Consider renaming {inpath} as {input} bc it can be a filehandle
-  #   (massive changes required; in some contexts it must be a path...)
-
   my $inpath = delete $opts{inpath};
-  croak "inpath is a ref! (".ref($inpath).")" if ref($inpath) && !blessed($inpath);
   croak "OpenAsCsv: missing 'inpath' option\n" unless $inpath;
   croak "OpenAsCsv: outpath may not be specified\n" if $opts{outpath};
 
   my $h = convert_spreadsheet($inpath, %opts, verbose => $opts{debug});
-  croak "sheetname key bug" if exists $h->{sheet};
-  my $csvpath = $h->{outpath}; # may be same as {inpath} if already a CSV
-  my $iolayers = $h->{iolayers};
+  oops "sheetname key bug" if exists $h->{sheet};
 
-  open my $fh, (openhandle($csvpath) ? "<&" : "<"), $csvpath
-    or croak "$csvpath : $!\n";
-  binmode $fh, $iolayers or die $!;
+  my $csvpath = $h->{outpath}; # might be same as {inpath} if already a CSV
+  open my $fh, "<", $csvpath or croak "$csvpath : $!\n";
+  binmode $fh, ":crlf:encoding(".$h->{encoding}.")" or die "binmode:$!";
 
   my $r = {
     fh            => $fh,
     csvpath       => $csvpath,
-    iolayers      => $iolayers,
     inpath        => $inpath,
-    sheetname     => $h->{sheetname},
-    sheet         => $h->{sheetname}, # deprecated
+    (map{ exists($h->{$_}) ? ($_ => $h->{$_}) : () }
+        qw/inpath_sans_sheet sheetname encoding tempdir/),
   };
-  $r->{tempdir} = $opts{tempdir} if $opts{tempdir};
 
   return $r;
 }
@@ -1353,18 +1180,18 @@ Spreadsheet::Edit::IO - convert between spreadsheet and csv files
   my $hash = OpenAsCsv("/path/to/spreadsheet.odt!Sheet1");  # single-arg form
   my $hash = OpenAsCsv(inpath => "/path/to/spreadsheet.odt", 
                        sheetname -> "Sheet1"); 
-  print "Reading ",$hash->csvpath()," with encoding ",$hash->encoding(),"\n";
+  print "Reading ",$hash->{csvpath}," with encoding ",$hash->{encoding},"\n";
   while (<$hash->{fh}>) { ... }
 
   # Convert CSV to spreadsheet
-  $hash = convert_spreadsheet(inpath => "mycsv.csv", cvt_to => "xls");
+  $hash = convert_spreadsheet(inpath => "mycsv.csv", cvt_to => "xlsx");
   print "Resulting spreadsheet path is $hash->{outpath}\n";
   
   # Convert a single sheet from a spreadsheet to CSV
   $hash = convert_spreadsheet(inpath => "mywork.xls", sheetname => "Sheet1", 
                               cvt_to => "csv");
-  open my $fh, (openhandle($hash->{outpath}) ? "<&" : "<"), $hash->{outpath};
-  binmode $fh, $hash->{iolayers};
+  open my $fh, "<", $hash->{outpath};
+  binmode $fh, ":encoding(":crlf:encoding(".$hash->{encoding}.")");
   ...
 
   # Convert all sheets in a spreadsheet to CSV files in a subdir
@@ -1413,9 +1240,8 @@ If a single argument is given it specifies INPUT; otherwise all arguments must
 be specified as key => value pairs, and may include any options supported
 by C<convert_spreadsheet>.
 
-INPUT may be a csv or spreadsheet workbook path or an open filehandle
-to one of those; if a spreadsheet, then a single "sheet" is 
-converted, specified by either a !SHEETNAME suffix 
+INPUT may be a csv or spreadsheet workbook path; if a spreadsheet, 
+then a single "sheet" is converted, specified by either a !SHEETNAME suffix 
 in the INPUT path, or a separate C<< sheetname => SHEETNAME >> option.
 
 The resulting file handle refers to a guaranteed-seekable CSV file; 
@@ -1426,52 +1252,51 @@ RETURNS: A ref to a hash containing the following:
 
  {
   fh        => the resulting open file handle
-  iolayers  => the iolayers (i.e. binmode arg) used by the file handle
+  encoding  => the encoding used for the .csv file
   csvpath   => the path {fh} refers to, which might be a temporary file
-  inpath    => original input path or open file handle
   sheetname => sheet name if the input was a spreadsheet
-  tempdir   => temporary directory, only if specified in input arguments
  }
 
 =head2 convert_spreadsheet INPUT, cvt_to=>suffix, OPTIONS
 
 =head2 convert_spreadsheet INPUT, cvt_to=>"csv", allsheets => 1, OPTIONS
 
-This converts from CSV to one of various spreadsheet formats or vice-versa.
+This converts between CSV and various spreadsheet.  
 
-RETURNS: A ref to a hash containing at least:
+RETURNS: A ref to a hash containing: 
 
  {
-  outpath   => path of output file (or directory with 'allsheets')
-  iolayers  => (i.e. binmode arg) needed to read output if CSV
-  inpath    => path of original file with any !SHEETNAME suffix removed
-  sheetname => sheet name if the input was a spreadsheet
-  cvt_from  => input file type, as specified or detected
-  cvt_to    => output file type, as specified or derived from outpath
+  outpath   => path to the output file (or directory with 'allsheets')
+               (a temporary file/dir or as you specified in OPTIONS).
+
+  encoding  => the encoding used when writing .csv files
  }
+
+INPUT is the input file path; it may be a separate first argument as 
+shown above, or else included in OPTIONS as C<< inpath =E<gt> INPUT >>.
+
+If C<outpath =E<gt> OUTPATH> is specifed then results are I<always> saved 
+to that path.  With C<allsheets> this is a directory, which will be created
+if necessary.
+
+If C<outpath> is NOT specified in OPTIONS then, with one exception,
+results are saved to a temporary file or directory and the path returned
+as C<outpath> in the result hash.
+The exception is if no conversion is necessary 
+(i.e. C<cvt_from> is the same as C<cvt_to>), when the
+input file itself is returned as C<outpath>.
+
+In all cases C<outpath> in the result hash points to the results.
 
 C<cvt_from> and C<cvt_to> are the filename suffixes (sans dot) of the
 corresponding file types, e.g. "csv", "xls", "xlsx", "odt" etc.
-
-INPUT may be a path or a pre-opened file handle.  If C<cvt_from> is
-is not specified then it is inferred from the INPUT path suffix, 
-or if INPUT is a handle or has no suffix then the file content is examined.
-
-If outpath => OUTPATH is specifed in OPTIONS then results are returned there.
-OUTPATH must have the appropriate file suffix (.csv .xls etc.) 
-except with C<< allsheets => 1 >> when OUTPATH, if specified,
-must be a directory path which will be created if it does not exist.
-
-If outpath => OUTPATH is B<not> specified (or is undef) then results are 
-returned in temporary file(s) which are auto-deleted at process exit, 
-except that if no conversion is
-necessary (C<cvt_from> is the same as C<cvt_to>) then INPUT itself is
-returned as C<outpath>. 
+These need not be specified when they can be inferred from INPUT
+or C<outpath> respectively.
 
 Some vestigial support for spreadsheet formats exists but does not work well
 and is not documented here.
 
-Other OPTIONS may include:
+OPTIONS may also include:
 
 =over 8
 
@@ -1484,35 +1309,52 @@ the INPUT path.
 
 =item allsheets => BOOL
 
-Valid only with C<< cvt_to => 'csv' >>.   All sheets in the input spreadsheet
-are converted to separate .csv files.  C<outpath>, if specified, must be
-a directory, which will be created if necessary; 
-if not specified, then a new sub-directory of I<tempdir> will
-be created to contain the the resulting .csv files.
+Valid only with C<< cvt_to =E<gt> 'csv' >>.   
+All sheets in the input spreadsheet
+are converted to separate .csv files named "SHEETNAME.csv" in
+the 'outpath' directory.
+
+=item input_encoding => ENCODING
+
+Specifies the encoding of INPUT if it is a csv file.
+
+ENCODING may be a comma-separated list of encoding
+names which will be tried in the order until one seems to work
+(requires pre-reading the input file).
+If only one encoding is specified it will be used without trying it first.
+The default is "UTF-8,windows-1252".
+
+=item output_encoding => ENCODING
+
+Specifies the encoding to use when writing csv file(s).  
+The default it 'UTF-8'.
 
 =item verbose => BOOL
 
-=item use_gnumeric => BOOL   # instead of libre/openoffice
-
-=item tempdir => "/path/to/dir" 
-
-If C<tempdir> is not specified a temporary directory will be created and
-auto-removed when your process exits.
+=item use_gnumeric => BOOL   # instead of libre/openoffice (DEPRECATED)
 
 =back
 
-=head2 sane_CSV_read_options
+=head3 B<'binmode' Argument For Reading result CSVs>
 
-=head2 sane_CSV_write_options
+It is not possible to control the line-ending style in output CSV files,
+but the following incantation will correctly read either DOS/Windows (CR,LF) 
+or *nix (LF) line endings as a single \n:
 
-@Spreadsheet::Edit::IO:sane_CSV_read_options contains the options you
-will always want to use with Text::CSV objects->new().
+   open my $fh, "<", $resulthash->{outpath};
+   my $enc = $resulthash->{encoding};
+   binmode($fh, ":crlf:encoding($enc)");
 
+
+=head2 @sane_CSV_read_options
+
+=head2 @sane_CSV_write_options
+
+These contain options you will always want to use with 
+S<<< C<< Text::CSV->new() >> >>>.
 Specifically, quotes and embedded newlines are handled correctly.
 
-You can append overrides,
-e.g. C<auto_diag> or C<allow_whitespace>.
-If you change C<quote_char>, then C<escape_char> must be set to the same value.
+Not exported by default.
 
 =head2 cx2let COLUMNINDEX
 
@@ -1520,20 +1362,22 @@ If you change C<quote_char>, then C<escape_char> must be set to the same value.
 
 Functions which translate between spreadsheet-column
 letter codes ("A", "B", etc.) and 0-based column indicies.
+Not exported by default.
 
 =head2 filepath_from_spec EXPR
 
 =head2 sheetname_from_spec EXPR
 
-Functions which decompose strings giving a spreadsheet path and possibly sheetname
-as "FILEPATH!SHEETNAME", "FILEPATH|||SHEETNAME", or "FILEPATH[SHEETNAME]".
+Functions which decompose strings containing a spreadsheet path and possibly sheetname
+suffix, of the form "FILEPATH!SHEETNAME", "FILEPATH|||SHEETNAME", or "FILEPATH[SHEETNAME]".
 C<sheetname_from_spec> returns C<undef> if the input does not have a
 a sheetname suffix.
+Not exported by default.
 
 =head2 form_spec_with_sheetname(PATH, SHEENAME)
 
-Composes a combined string in a "preferred" format ("PATH!SHEETNAME" or one of the others;
-which is not specified).
+Composes a combined string in a "preferred" format (currently "PATH!SHEETNAME").
+Not exported by default.
 
 =cut
 

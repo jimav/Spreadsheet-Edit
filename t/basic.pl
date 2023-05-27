@@ -406,7 +406,7 @@ options silent => $silent, verbose => $verbose, debug => $debug;
 }
 
 # Verify that no-titles mode works
-read_spreadsheet {title_rx => undef}, $inpath;
+read_spreadsheet {title_rx => undef}, $inpath->stringify;
 
 die "title_rx with no titles returns defined value" if defined(title_rx());
 my $expected_rx = 0;
@@ -925,7 +925,7 @@ P3,Q3,R3,S3,T3,U3,V3
 P4,Q4,R4,S4,T4,U4
 P5,Q5,R5,S5,T5,U5
 EOF
-    read_spreadsheet $inpath2;
+    read_spreadsheet $inpath2->stringify;
 
     bug unless sheet() == $sheet2;
     apply { check_colspec_is_undef('Gtitle') };
