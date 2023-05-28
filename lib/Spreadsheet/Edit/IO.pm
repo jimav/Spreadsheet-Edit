@@ -89,17 +89,20 @@ sub _get_exclusive_lock($) { # returns lock object
   open my $lock_fh, "+>>", $lockfile_path or die $!;
   chmod 0666, $lock_fh;
   $opts->{lockfile_fh} = $lock_fh;
-  if (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
-    seek($lock_fh,0,SEEK_SET) or die;
-    (my $owner = do{ local $/; <$lock_fh> }) =~ s/\s*\z//s;
-    {
-      last unless $owner =~ /pid (\d+)/ && (my @s = stat("/proc/$1"));
-      last unless my @pw = getpwuid($s[4]);
-      $owner = $pw[0]." ".$owner; # user name
+  while (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
+    seek($lock_fh, 0, SEEK_SET) or die;
+    my $owner = (<$lock_fh>)[-1] // "";  # pid NNN (progname)
+    { my ($pid) = ($owner =~ /pid (\d+)/) or last;
+      my @s = stat("/proc/$pid") or last;
+      my @pw = getpwuid($s[4]) or last;
+      $owner = "$pw[0] ".$owner
     }
-    warn ">> ($$) Waiting for exclusive lock owned by $owner",
-         " to convert spreadsheet...\n";
+    my $ownermsg = $owner ? " held by $owner" : "";
+    warn ">> ($$) Waiting for exclusive lock${ownermsg}...\n"
+      unless $opts->{silent};
+    unless ($owner) { sleep 1; redo }
     flock($lock_fh, LOCK_EX) or die "flock: $!";
+    last;
   }
   print $lock_fh "pid $$ ($progname)\n"; # always appends
 }
@@ -389,14 +392,18 @@ sub _openlibre_features() {
     # ...but not yet extracting a single sheet by name.
     # https://bugs.documentfoundation.org/show_bug.cgi?id=135762#c24
     named_sheet => 0,
+    # Supported output formats are too many to list
+    ousuf_any => 1,
   }
 }
-sub _openlibre_supports_allsheets() { _openlibre_features()->{allsheets} }
-sub _openlibre_supports_named_sheet() { _openlibre_features()->{named_sheet} }
+sub _openlibre_supports_allsheets() { _openlibre_features->{allsheets} }
+sub _openlibre_supports_named_sheet() { _openlibre_features->{named_sheet} }
+sub _openlibre_supports_writing($) { _openlibre_features->{available} }
 
 sub _ssconvert_features() { return { availble => 0 } } # TODO add back?
 sub _ssconvert_supports_allsheets() { _ssconvert_features()->{allsheets} }
 sub _ssconvert_supports_named_sheet() { _ssconvert_features()->{named_sheet} }
+sub _ssconvert_supports_writing($) { _ssconvert_features->{available} }
 
 sub _runcmd($@) {
   my ($opts, @cmd) = @_;
@@ -472,7 +479,6 @@ sub _convert_using_openlibre($$) {
   oops unless all{ $opts->{$_} } qw/inpath_sans_sheet cvt_from cvt_to/;
   oops if $opts->{allsheets} && ! _openlibre_supports_allsheets();
   oops if $opts->{sheetname} && ! _openlibre_supports_named_sheet();
-  oops if $dst =~ /\.csv$/;
   my $debug = $opts->{debug};
 
   my $prog = _openlibre_path() // oops;
@@ -499,22 +505,25 @@ sub _convert_using_openlibre($$) {
   # http://wiki.openoffice.org/wiki/Documentation/DevGuide/Spreadsheets/Filter_Options
   # https://wiki.documentfoundation.org/Documentation/DevGuide/Spreadsheet_Documents#Filter_Options_for_the_CSV_Filter
   
+  # I think we never want to specify the filter unless we have parameters
+  # for it.  Currently that is only for csv.
+  # If no filter is specified, the suffix (e.g. 'ods') should be enough
   state $suf2ofilter = {
     csv  => "Text - txt - csv (StarCalc)",
     txt  => "Text - txt - csv (StarCalc)",
-    xls  => "MS Excel 97",
-    xlsx => "Calc MS Excel 2007 XML",
+    #xls  => "MS Excel 97",
+    #xlsx => "Calc MS Excel 2007 XML",
+    #ods  => "calc8", 
   };
 
   my $ifilter = $opts->{soffice_infilter} //= do{
-    my $filter_name = $suf2ofilter->{$opts->{cvt_from}} 
-        // croak "Don't know soffice output filter name for $opts->{cvt_from}";
     if ($opts->{cvt_from} eq "csv") {
-      #CSV INPUT FORMAT CONTROL UNTESTED as of 2/6/2021
+      my $filter_name = $suf2ofilter->{$opts->{cvt_from}} or oops;
       my $enc = $opts->{input_encoding};
       my $charset = _name2LOcharsetnum($enc); # dies if unknown enc
       my $colformats = "";
       if (my $cf = $opts->{col_formats}) {
+        #This mis-feature not tested, and probably will go away
         $cf = [split /\//, $cf] if !ref($cf);  #  fmtA/fmtB/...
         for (my $ix=0; $ix <= $#$cf; $ix++) {
           local $_ = $cf->[$ix];
@@ -532,30 +541,55 @@ sub _convert_using_openlibre($$) {
         }
       }
       $filter_name.":"
-      # Tokens 1-5: FldSep=, TxtDelim='"' Charset FirstLineNum CellFormats
-      ."44,34,$charset,1,$colformats"
-      # Tokens 6-7: LanguageId QuoteAllTextCells
-      .",true" ;
-    } 
+      # Tokens 1-4: FldSep=',' TxtDelim='"' Charset FirstLineNum
+      # TODO: Detect separator and quote chacter from the data
+      . "44,34,$charset,1"
+      # Token 5: Cell format codes:
+      #  If variable-width cells (the norm): colnum/fmt/colnum/fmt...
+      #    colnum: 1-based column number
+      #    fmt: 1=Std 2=Text 3=MM/DD/YY 4=DD/MM/YY 5=YY/MM/DD 6-8 unused
+      #         9=ignore field (do not import),
+      #         10=US-English content (e.g. 3.14 not 3,14)
+      #         (I'm guessing 1=Std means use current lang [or per Tok 6?])
+      #  If fixed-width cells... [something else]
+      . ",$colformats"
+      # Token 6: MS-LCID Language Id; 0 or omitted means UI language
+      . ","  # default: false
+      # Token 7: On input: "Quoted --> text". On output: "Quote text cells"
+      #   This must be false to recognize dates like "Jan 1, 2000" because
+      #   they by necessity must be quoted because of the embeded comma.
+      .",false" # default: false
+      # Token 8: on input: "Detect Special Numbers", i.e. date or time values
+      #   in human form, numbers in scientific (expondntial) notation etc.
+      #   If false, ONLY decimal numbers (thousands separators ok).
+      .",true" # default: false (for import)
+      # Tokens 9-10: not used on import
+      .",,"
+      # Token 11: Remove spaces; trim leading & trailing spaces when reading
+      .","  # default: false
+      # Token 12: not use on import
+      .","
+      # Token 13: Import "=..." as formulas instead of text?
+      .","  # default: false i.e. do not recognize formulas
+      # Token 14: "Automatically detected since LibreOffice 7.6" [BOM?]
+      .","
+    }
     else {
-      $filter_name
+      undef
     }
   };
 
   my $ofilter = $opts->{soffice_outfilter} //= do{
     # OutputFilterName[:paramtoken,paramtoken,...]
-    my $filter_name = $suf2ofilter->{$opts->{cvt_to}} 
-        // croak "Don't know soffice output filter name for $opts->{cvt_to}";
     if ($opts->{cvt_to} eq "csv") {
+      my $filter_name = $suf2ofilter->{$opts->{cvt_to}} or oops;
       my $enc = $opts->{output_encoding};
       my $charset = _name2LOcharsetnum($enc); # dies if unknown enc
       $filter_name.":"
       # Tokens 1-4: FldSep=, TxtDelim=" Charset FirstLineNum
       ."44,34,$charset,1"
-      # Token 5: Cell format codes, separated by / 
-      #  1=Std 2=Text 3=MM/DD/YY 4=DD/MM/YY 5=YY/MM/DD 6-8=?? 
-      #  9=ignore field (do not import),10=US-English (=> 3.14 not 3,14)
-      #  (I'm guessing 1 is like 10 but using current or specified language)
+      # Token 5: Cell format codes.  Only used for import? (see above)
+      #   What about fixed-width?
       .","
       # Token 6: Language identifier (uses Microsoft lang ids)
       #   1033 means US-English (omitted => use UI's language)
@@ -566,22 +600,32 @@ sub _convert_using_openlibre($$) {
       # *** that such cells were not numbers or dates, etc.  
       # *** So I'm now using "true" to always quote.
       .",true"
-      # Token 8: DetectSpecialNumbers"
-      .","
+      # Token 8: on output: true to store number as numbers; false to
+      #          store number cells as text.  No UI equivalent.
+      ."," # default: true (for export)
       # Token 9: "Save cell contents as shown"
-      .",".($opts->{raw_values} ? "false" : "true")
+      #   Generally we DO NOT want this because things like dates
+      #   can be formatted many different ways.
+      ##.",".($opts->{raw_values} ? "false" : "true")
+      .",false"
       # Token 10: "Export cell formulas"
       .",false"
-      # Token 11: not used during export
+      # Token 11: not used for export
       .","
       # Token 12: (LO 7.2+) sheet selections:
       #   0 or absent => the "first" sheet
       #   1-N => the Nth sheet (arrgh, can not specify name!!)
       #   -1 => export all sheets to files named filebasenamne.Sheetname.csv
-      .",".($opts->{allsheets} ? -1 : die("add named-sheet support here"))
+      .",".($opts->{allsheets} ? -1 : 
+            $opts->{sheetname} ? die("add named-sheet support here") :
+            0)
+      # Token 13: Not used for export
+      .","
+      # Token 14: true to include BOM in the result
+      #.","
     }
     else {
-      $filter_name
+      undef
     }
   };
 
@@ -950,6 +994,10 @@ sub _determine_enc_tofrom($) {
 
 sub _tool_extract_all_csvs($$) {
   my ($opts, $destdir) = @_;
+
+  _get_exclusive_lock($opts);
+  scope_guard { _release_lock($opts); };
+
   delete local $opts->{sheetname};
   local $opts->{allsheets} = 1;
   if (_openlibre_supports_allsheets()) {
@@ -961,13 +1009,44 @@ sub _tool_extract_all_csvs($$) {
   else { croak "Can't extract 'allsheets'.  Please install LibreOffice 7.2 or newer" }
 }
 
-sub _tool_can_extract_one_csv() { 
+sub _tool_can_extract_csv_byname() { 
   _openlibre_supports_named_sheet() || _ssconvert_supports_named_sheet() 
 }
 sub _tool_extract_one_csv($$) {
   my ($opts, $destpath) = @_;
-  confess "should not get here"; # unless we restore ssconvert support
+
+  ## FIXME: This is not quite right--_tool_write_spreadsheet()
+  ##  contains almost the same code.  Should be a better factoring...
+  
+  _get_exclusive_lock($opts);
+  scope_guard { _release_lock($opts); };
+
+  confess "should not get here" if $opts->{sheetname};
+  if (_openlibre_features->{available}) {
+    _convert_using_openlibre($opts, $destpath);
+  } else {
+    _convert_using_ssconvert($opts, $destpath);
+  }
 }
+sub _tool_can_extract_current_sheet() {
+  _openlibre_features->{available} || _ssconvert_features->{available}
+}
+
+sub _tool_write_spreadsheet($$) {
+  my ($opts, $destpath) = @_;
+
+  _get_exclusive_lock($opts);
+  scope_guard { _release_lock($opts); };
+
+  if (_openlibre_supports_writing($opts->{cvt_to})) {
+    _convert_using_openlibre($opts, $destpath);
+  }
+  elsif (_ssconvert_supports_writing($opts->{cvt_to})) {
+    _convert_using_ssconvert($opts, $destpath);
+  }
+  else { croak "Can't create $opts->{cvt_to} spreadsheets.  Please install LibreOffice 7.2 or newer" }
+}
+
 
 # Extract CSVs for every sheet into {outpath} (setting to tmpdir if not preset).
 # If cached CSVs are available they are moved into {outpath}/ .
@@ -979,36 +1058,72 @@ sub _extract_all_csvs($) {
   _tool_extract_all_csvs($opts, $outpath); #logs
 }
 
-# Extract a specified sheet into a CSV at {outpath} (defaulting to temp file).
+
+# Extract a single sheet into a CSV at {outpath} (defaulting to temp file).
 # If a cached CSV is available it is moved to {outpath}.
 sub _extract_one_csv($) {
   my $opts = shift;
-
-  my $outpath = _final_outpath($opts);
-  $outpath->remove unless -d $outpath;
-
   my $cachedirpath = _cachedir($opts);
-  confess "undef sheetname" unless defined $opts->{sheetname};
-  my $fname = $opts->{sheetname}.".csv";
-  my $cached_path = $cachedirpath->child($fname);
-  if (-e $cached_path) {
-    warn "> Moving cached $fname to $outpath\n" if $opts->{verbose};
-    File::Copy::move($cached_path, $outpath);
-  }
-  elsif (_tool_can_extract_one_csv()) {
-    _tool_extract_one_csv($opts, $opts->{outpath}); #logs
-  } 
-  else {
-    warn ">>Emulating extract-by-name by extracting all csvs into cache...\n"
-      if $opts->{debug};
+
+  my sub _fill_csv_cache() {
     $cachedirpath->remove_tree;
     $cachedirpath->mkpath;
     { local $opts->{verbose} = 0;
       #local $opts->{debug} = 0;
       _tool_extract_all_csvs($opts, $cachedirpath);
     }
-    __SUB__->($opts);
   }
+
+  my $outpath = _final_outpath($opts);
+  $outpath->remove unless -d $outpath;
+
+  if (defined($opts->{sheetname})) {
+    my $fname = $opts->{sheetname}.".csv";
+    my $cached_path = $cachedirpath->child($fname);
+    if (! -e $cached_path) {
+      if (_tool_can_extract_csv_byname()) {
+        _tool_extract_one_csv($opts, $outpath); #logs
+        return
+      }
+      warn ">>Emulating extract-by-name by extracting all csvs into cache...\n"
+        if $opts->{debug};
+      _fill_csv_cache;
+    }
+    croak "Sheet '$opts->{sheetname}' does not exist in $opts->{inpath_sans_sheet}\n"
+      unless -e $cached_path;
+    warn "> Moving cached $fname to $outpath\n" if $opts->{verbose};
+    File::Copy::move($cached_path, $outpath);
+    return
+  }
+  elsif (_tool_can_extract_current_sheet()) {
+    _tool_extract_one_csv($opts, $outpath); #logs
+    return
+  }
+  else {
+    _fill_csv_cache;
+    my @children = $cachedirpath->children;
+    if (@children == 0) {
+      croak "$opts->{inpath_sans_sheet} appears to have zero sheets!\n"
+    }
+    elsif (@children == 1) {
+      my $fname = $children[0]->basename;
+      my $cached_path = $cachedirpath->child($fname);
+      warn "> Moving cached $fname to $outpath\n" if $opts->{verbose};
+      File::Copy::move($cached_path, $outpath);
+      return
+    }
+    else {
+      croak "$opts->{inpath_sans_sheet} contains multiple sheets; you must specify a sheetname\n"
+    }
+  }
+}
+sub _write_spreadsheet($) {
+  my $opts = shift;
+
+  my $outpath = _final_outpath($opts);
+  $outpath->remove unless -d $outpath;
+
+  _tool_write_spreadsheet($opts, $outpath);
 }
 
 # If {outpath} is not set, set it to a unique temporary path in $tempdir
@@ -1039,9 +1154,6 @@ sub convert_spreadsheet(@) {
   my %opts = &_process_args;
   btw dvis('>>> convert_spreadsheet %opts\n') if $opts{debug};
   my %input_opts = %opts;
-
-  _get_exclusive_lock(\%opts);
-  scope_guard { _release_lock(\%opts); };
 
   _create_tempdir_if_needed(\%opts);
 
