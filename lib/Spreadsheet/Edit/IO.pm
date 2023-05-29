@@ -219,7 +219,7 @@ sub _name2LOcharsetnum($) {
   local $_ = uc $enc;
   while (! $LO_charsets{$_}) {
     # successively remove - and other special characters
-    s/\W//a or croak "Unknown encoding name '$enc'";
+    s/\W//a or confess "LO charset: Unknown encoding name '$enc'";
   }
   $LO_charsets{$_}
 }
@@ -543,6 +543,7 @@ sub _convert_using_openlibre($$) {
       $filter_name.":"
       # Tokens 1-4: FldSep=',' TxtDelim='"' Charset FirstLineNum
       # TODO: Detect separator and quote chacter from the data
+      #       (also affects any pre-processing, see Token 7 comments)
       . "44,34,$charset,1"
       # Token 5: Cell format codes:
       #  If variable-width cells (the norm): colnum/fmt/colnum/fmt...
@@ -555,9 +556,14 @@ sub _convert_using_openlibre($$) {
       . ",$colformats"
       # Token 6: MS-LCID Language Id; 0 or omitted means UI language
       . ","  # default: false
-      # Token 7: On input: "Quoted --> text". On output: "Quote text cells"
-      #   This must be false to recognize dates like "Jan 1, 2000" because
-      #   they by necessity must be quoted because of the embeded comma.
+      # Token 7: On input: true => Quoted cells are always read a 'text',
+      #  effectively disabling Token 8.  This must be false to recognize dates 
+      #   like "Jan 1, 2000" which by necessity must be quoted for the comma,
+      #   but will **CORRUPT** zip codes with leading zeroes!
+      # ??? FIXME/TODO:
+      #    We _could_ pre-process to add quotes around leading-zero fields,
+      #    if we can assume the input uses 'standard' quoting conventions
+      #    (CAN WE??).  Otherwise this would be a rabbit hole of complexity...
       .",false" # default: false
       # Token 8: on input: "Detect Special Numbers", i.e. date or time values
       #   in human form, numbers in scientific (expondntial) notation etc.
@@ -596,9 +602,14 @@ sub _convert_using_openlibre($$) {
       .","
       # Token 7: QuoteAllTextCells
       # *** true will "quote" even single-bareword cells, which looks
-      # *** bad and makes t/ tests messier.  OTOH quotes provide information
-      # *** that such cells were not numbers or dates, etc.  
-      # *** So I'm now using "true" to always quote.
+      # *** bad and makes t/ tests messier, but preserves information
+      # *** that such cells were not numbers or dates, etc.  This ensures
+      # *** that Zip codes, etc. with leading zeroes won't be corrupted
+      # *** if converted back into a spreadsheet.
+      # ??? FIXME/TODO:
+      #    We could post-process to remove quotes from obviously-text fields.
+      #    Seems reasonable because we know the quoting convention used
+      #    (because we specify it here)... unlike pre-processing on input.
       .",true"
       # Token 8: on output: true to store number as numbers; false to
       #          store number cells as text.  No UI equivalent.
@@ -645,6 +656,7 @@ sub _convert_using_openlibre($$) {
   # will be deleted when $dirpath goes out of scope
   
   my @cmd = ($prog, "--headless", "--invisible",
+                    "--nolockcheck", "--norestore",
                     $ifilter ? ("--infilter=$ifilter") : (),
                     "--convert-to", 
                       $opts->{cvt_to}.($ofilter ? ":$ofilter" : ""),
@@ -850,7 +862,7 @@ sub form_spec_with_sheetname($$) {
   #$sheetname ? "${filepath}|||${sheetname}" : $filepath
 }
 
-our $default_input_encodings = "UTF-8,UTF-16BE,UTF-16LE,windows-1252";
+our $default_input_encodings = "UTF-8,windows-1252,UTF-16BE,UTF-16LE";
 our $default_output_encoding = "UTF-8";
 
 # Return digested %opts setting
@@ -1039,6 +1051,10 @@ sub _tool_write_spreadsheet($$) {
   scope_guard { _release_lock($opts); };
 
   if (_openlibre_supports_writing($opts->{cvt_to})) {
+    if ($opts->{sheetname}) {
+      carp "WARNING: Sheet name when creating a spreadsheet will be ignored\n";
+      delete $opts->{sheetname};
+    }
     _convert_using_openlibre($opts, $destpath);
   }
   elsif (_ssconvert_supports_writing($opts->{cvt_to})) {
@@ -1242,8 +1258,8 @@ sub convert_spreadsheet(@) {
 
 # Open as a CSV, intuiting input encoding, converting spreadsheet if necessary.
 #
-# The :crlf will be used, which translates DOS CR,LF to \n while passing
-# *nix bare LF through unmolested.
+# :crlf translation is enabled on the resulting file handle, which converts 
+# DOS CR,LF to \n while passing *nix bare LF through unmolested.
 #
 # Input argument(s) are the same as for convert_spreadsheet (except
 # outpath may not be specified).
@@ -1255,8 +1271,6 @@ sub OpenAsCsv {
               cvt_to => 'csv',
             );
   # TODO: Rename {path} to {inpath} in all usages and rm this cruft;
-  # TODO: Consider renaming {inpath} as {input} bc it can be a filehandle
-  #   (massive changes required; in some contexts it must be a path...)
   carp "Obsolete OpenAsCsv usage: Change path to inpath\n"
     if exists($opts{path}) and !$opts{silent};
   $opts{inpath} //= delete $opts{path}; # be compatible with old API 
@@ -1446,7 +1460,7 @@ ENCODING may be a comma-separated list of encoding
 names which will be tried in the order until one seems to work
 (requires pre-reading the input file).
 If only one encoding is specified it will be used without trying it first.
-The default is "UTF-8,UTF-16BE,UTF-16LE,windows-1252".
+The default is "UTF-8,windows-1252".
 
 =item output_encoding => ENCODING
 

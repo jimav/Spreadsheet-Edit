@@ -1761,7 +1761,7 @@ sub _colspec2cx {
 
 # The user-callable API
 # THROWS if a spec does not indicate any existing column.
-# Can return multiple results, either from multple args or Regexp multimatch
+# Can return multiple results due to multple args and/or Regexp multimatch
 # In scalar context returns the first result.
 sub spectocx(@) { # the user-callable API
   my $self = &__selfmust;
