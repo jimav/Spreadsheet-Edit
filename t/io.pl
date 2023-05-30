@@ -23,7 +23,8 @@ use Test::Deep::NoTest qw/eq_deeply/;
 
 { my $path = eval{ Spreadsheet::Edit::IO::_openlibre_path() };
   if (!$path && $@ =~ /not find.*Libre/i) {
-    say __FILE__,": Skipping all because LibreOffice is not installed";
+    say __FILE__,": Skipping all because LibreOffice is not installed"
+      unless $silent;
     exit 0
   }
   die "$@ " if $@;

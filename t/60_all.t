@@ -48,7 +48,7 @@ plan tests => scalar(@subtests) * 2;
 for my $st (@subtests) {
   subtest_buffered with_silent => sub {
     my ($soutput, $swstat) = tee_merged { run_subtest($st, '--silent') };
-    ok($swstat == 0, "zero subtest exit status",
+    ok($swstat == 0, "zero exit status from $st",
        "$soutput\nNon-zero exit status from subtest '$st' --silent"
       ) || return;
     like($soutput,

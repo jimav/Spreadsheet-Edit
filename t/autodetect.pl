@@ -32,7 +32,7 @@ my $inpath_obj = create_testdata(
 );
 my $inpath = $inpath_obj->stringify;
 #warn dvis '### $debug $verbose $silent $Spreadsheet::Edit::Verbose';
-read_spreadsheet $inpath;
+read_spreadsheet { debug => $debug }, $inpath;
 defined(sheet()) or die "read_spreadsheet did not create current_sheet";
 ! ${sheet()}->{cmd_nesting} or die "non-zero cmd_nesting";
 my @saved_data = (@rows); # for construct-from-memory tests
