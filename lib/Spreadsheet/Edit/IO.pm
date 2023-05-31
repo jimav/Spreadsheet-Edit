@@ -25,7 +25,7 @@ our @EXPORT_OK = qw/@sane_CSV_read_options @sane_CSV_write_options/;
 
 use version ();
 use Carp;
-sub oops(@) { @_=("\n".__PACKAGE__." oops:\n",@_,"\n"); goto &Carp::confess }
+sub oops(@) { @_=("\n".__PACKAGE__." **oops**: @_\n"); goto &Carp::confess }
 sub btw(@) { local $_=join("",@_); s/\n\z//s; warn((caller(0))[2].": $_\n"); }
 
 use File::Copy ();
@@ -48,12 +48,12 @@ use Encode qw(encode decode);
 use Data::Dumper::Interp qw/vis visq dvis dvisq ivis ivisq avis qsh qshlist u/;
 use File::Glob qw/bsd_glob GLOB_NOCASE/;
 use Digest::MD5 qw/md5_base64/;
+use Text::CSV ();
 
 use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall/;
 our %SpreadsheetEdit_Log_Options = (
   is_public_api => sub{
-    # hide calls
-     $_[1][3] =~ /(?:::|^)[a-z][^:]*$/
+     $_[1][3] =~ /(?: ::|^ )(?: [a-z][^:]* | OpenAsCsv | ConvertSpreadsheet )$/x
   },
 );
 
@@ -495,18 +495,18 @@ sub _cachedir($) {
   _path_under_tempdir($opts,words => [$opts->{ifbase}, "csvcache"]);
 }
 
-# Copy an ephemeral temp file to a path under tempdir if needed
-sub _make_file_permanent($$) {
-  my ($opts, $path) = @_;
-  if (eval{ $path->cached_temp }) { # didn't throw
-    my $suf = $path->basename =~ /\.(\w+)$/a ? $1 : undef;
-    my $newpath = _path_under_tempdir($opts, suf => $suf);
-    $path->move($newpath);
-    return $newpath
-  } else {
-    return $path
-  }
-}
+## Copy an ephemeral temp file to a path under tempdir if needed
+#sub _make_file_permanent($$) {
+#  my ($opts, $path) = @_;
+#  if (eval{ $path->cached_temp }) { # didn't throw
+#    my $suf = $path->basename =~ /\.(\w+)$/a ? $1 : undef;
+#    my $newpath = _path_under_tempdir($opts, suf => $suf);
+#    $path->move($newpath);
+#    return $newpath
+#  } else {
+#    return $path
+#  }
+#}
 
 sub _convert_using_openlibre($$$) {
   my ($opts, $src, $dst) = @_;
@@ -559,7 +559,7 @@ sub _convert_using_openlibre($$$) {
       if (my $cf = $opts->{col_formats}) {
         $cf = [split /[\/,]/, $cf] unless ref($cf);  #  fmtA/fmtB/...
         for (my $ix=0; $ix <= $#$cf; $ix++) {
-          local $_ = $cf->[$ix];
+          local $_ = $cf->[$ix] // 1;
              m#^([123459]|10)$#
           || s#^standard$#1#i
           || s#^text$#2#i
@@ -570,7 +570,7 @@ sub _convert_using_openlibre($$$) {
           || s#^US.*English$#10#i
           || croak "Unknown format code '$_' in {col_formats}";
           $colformats .= "/" if $colformats;
-          $colformats .= "$ix/$_";
+          $colformats .= ($ix+1)."/$_";
         }
       }
       $filter_name.":"
@@ -990,86 +990,167 @@ sub _parse_iolayers($) {
 sub _determine_enc_tofrom($) {
   my $opts = shift;
   my $debug = $opts->{debug};
+  # Skip to ==BODY== below
 
-  my sub detect_unsafe_unquoted($$$) {
-    my ($chars, $q, $sep) = @_;
-    # If unquoted fields exist which contain something which might be corrupted
-    # when read, quote them and substitute the modified the data.  Currently
-    # I know of only one such thing: Leading zeroes, e.g. Zip codes
-    #
-    # RETURNS: A string containing revised content if needed, "" if no
-    # changes are needed, or throws on parsing error (which can happen while
-    # trying different quote_char and sep_char combos).
-    #
-    my %ncols_dist;
-    our $ncols; local $ncols = 0;
-    my $outchars = "";
-    my $changed;
-    my $white_re = $sep =~ /\s/ ? '\\ ' : '[\ \t]';
-btw dvis '##AA0 $q $sep $chars' if $debug;
-    for (;;) {
-#btw ivis '##AA pos=${\(pos($chars))}' if $debug;
-      if ($chars =~ /\G(?: 
-                         (?:
-                            # Quoted cell
-                            ${q} (?:[^${q}]+|${q}${q})* ${q} 
-                            |
-                            # Unquoted starting with other than a zero
-                            [^0${q}${sep}\x{0D}\x{0A}][^${q}${sep}\x{0D}\x{0A}]*
-                            |
-                            # Empty cell
-                         )
-                         (?<ender>
-                           ${sep}
-                           (?{ $ncols = $ncols + 1; })
-                         | (?:\R|\z)
-                           (?{ $ncols_dist{$ncols}++; $ncols = 0; })
-                         )
-                         (?{ btw dvis 'EOL: $+{ender} $ncols %ncols_dist' if $debug; })
-                       )+/xgc) {
-        # Quoted or safe unquoted field(s)
-btw ivis '##Quoted or safe unquoted: $&  (q=$q sep=$sep)' if $debug;
-        $outchars .= $&;
+  my sub determine_input_encoding($) {
+    my $r2octets = shift;
+    # If user specified one encoding, use it; if user specified list, try them.
+    # If user did not specify, the default is a list to try.
+    $opts->{input_encoding} //= $default_input_encodings;
+    my @enclist = split m#,#, $opts->{input_encoding};
+    return 
+      if @enclist == 1; 
+    $$r2octets //= $opts->{inpath_sans_sheet}->slurp_raw;
+    for my $enc (@enclist) {
+      eval { decode($enc, $$r2octets, Encode::FB_CROAK|Encode::LEAVE_SRC) };
+      if ($@) {
+         btw "Input encoding '$enc' did not work...($@)\n" if $debug;
+         next;
       }
-      elsif ($chars =~ /\G (${white_re}*0[^${q}${sep}\x{0D}\x{0A}]*) 
-                           (?<ender>
-                             ${sep}
-                             (?{ $ncols = $ncols + 1; })
-                           | (?:\R|\z)
-                             (?{ $ncols_dist{$ncols}++; $ncols = 0; })
-                           )
-                       /xgc) {
-        # An unsafe unquoted field
-btw ivis '##UNSAFE unquoted $1 followed by $2 (q=$q sep=$sep)' if $debug;
-        $outchars .= $q . $1 . $q . $2;
-        $changed = $1;
-      }
-      elsif ($chars =~ /\G\z/) {
-btw dvis 'Finished unsafe-quote parse' if $debug;
-        last
-      }
-      else {
-        my $pos = pos($chars);
-        my $msg = ivis('CSV PRE-PARSE ERROR (or bug) with q=$q sep=$sep at pos=${\(pos($chars))}\n')
-           .(defined($pos) ? ' ->'.substr($chars,$pos)."\n" : "");
-        btw $msg if $debug;
-        die $msg
-        #$changed = 0;
-        #last;
+      btw "Input encoding '$enc' seems to work.\n" if $debug;
+      @enclist = ($enc);
+      last
+    }
+    #croak "Could not detect encoding of $opts->{inpath_sans_sheet}\n" 
+    confess "Could not detect encoding of $opts->{inpath_sans_sheet}\n" 
+      if @enclist > 1;
+    $opts->{input_encoding} = $enclist[0];
+  } #determine_input_encoding
+
+  my sub readparse_csv($@) {
+    my $fh = shift;
+    my %csvopts = (
+      @sane_CSV_read_options,
+      defined($opts->{quote_char}) ? (quote_char=>$opts->{quote_char}) : (),
+      defined($opts->{sep_char})   ? (sep_char=>$opts->{sep_char})     : (),
+      auto_diag => 2, # throw on error
+      @_
+    );
+    $csvopts{escape_char} = $csvopts{quote_char}; # must always be the same
+
+    my $csv = Text::CSV->new (\%csvopts)
+              or croak "Text::CSV->new: ", Text::CSV->error_diag(),
+                       dvis('\n## %csvopts\n');
+    my @rows;
+    while (my $F = $csv->getline( $fh )) {
+      push(@rows, $F);
+    }
+    \@rows
+  }
+
+  my sub open_input($) {
+    my $r2octets = shift;
+    oops unless $opts->{input_encoding};
+    my $fh;
+    my $pathish = defined($$r2octets) 
+                    ? \$$r2octets : $opts->{inpath_sans_sheet};
+    open($fh, "<:encoding($opts->{input_encoding})", $pathish) 
+      or die "$pathish : $!";
+    $fh
+  }
+
+  my sub determine_csv_q_sep($$) {
+    my ($r2octets, $r2rows) = @_;
+    return 
+      if defined($opts->{quote_char}) && defined($opts->{sep_char});
+
+    my $fh = open_input($r2octets);
+    
+#    my $chars;
+#    if (defined($$r2octets)
+#      $chars = decode($opts->{input_encoding},$$r2octets,Encode::FB_CROAK);
+#    }
+    
+    # Try combinations starting with the most-common '"' and ',' while
+    # parsing the file for unsafe unquoted values (throws on syntax error).
+    # The expectation is that the first try usually succeeds
+    Q: 
+    for my $q (defined($opts->{quote_char}) 
+                 ? ($opts->{quote_char}) : ("\"", "'")) {
+      my $found_q;
+      SEP: 
+      for my $sep (defined($opts->{sep_char}) 
+                     ? ($opts->{sep_char}) : (",","\t")) {
+        btw dvis '--- TRYING $q $sep ---' if $debug;
+#        # Preliminary check for an illegal use of the quote char
+#        if (defined($chars) 
+#            && $chars =~ /[^${q}${sep}\x{0D}\x{0A}]
+#                          ${q}
+#                          (?=[^${q}${sep}\x{0D}\x{0A}] | \z)/gx) {
+#          btw ivis '>>>quote_char CAN NOT BE $q with sep=$sep because q exists mid-field before pos ${\(pos($chars))}'
+#            if $debug;
+#          next SEP
+#        }
+        $$r2rows = eval{ readparse_csv($fh, quote_char=>$q, sep_char=>$sep) };
+        if ($@ eq "") {
+          warn ivis '>> Detected quote_char=$q sep_char=$sep\n' if $debug;
+          $opts->{quote_char} = $q;
+          $opts->{sep_char} = $sep;
+          last Q;
+        }
+        warn vis '$@\nq=$q sep=$sep did not work...\n' if $debug;
+        seek $fh, 0, SEEK_SET;
       }
     }
-    btw dvis '### $q $sep %ncols_dist' if $debug;
-    if (defined $changed) {
-      warn ivisq '>>Pre-processed .csv to quote unquoted $changed\n' 
-        if $debug;
-      return $outchars
-    } else {
-btw dvis '(no changes needed) %ncols_dist' if $debug;
-      return ""
+    unless (defined($$r2rows)) {
+      confess "Input file is not valid CSV (or we have a bug)\n"
     }
-  }#detect_unsafe_unquoted
+  }#determine_csv_q_sep
 
-  my $eff_input = $opts->{inpath_sans_sheet} // oops;
+  my sub determine_csv_col_formats($$) {
+    my ($r2octets, $r2rows) = @_;
+    return 
+      if defined $opts->{col_formats};
+    $$r2rows //= do{
+      my $fh = open_input($r2octets);
+      readparse_csv($fh);
+    };
+    state $curr_yy = (localtime(time))[5];
+    my @col_formats;
+    for my $row (@{ $$r2rows }) {
+      for my $i (0..$#$row) {
+        for ($row->[$i]) {
+          # recognize obvious Y/M/D or M/D/Y or D/M/Y date forms
+          if (m#\b(?<y>(?:[12]\d)?\d\d)/(?<m>\d\d)/(?<d>\d\d)\b#) {
+            if ($+{d} > 12 && $+{d} <= 31 && $+{m} >= 1 && $+{m} <= 12 
+                 && ($+{y} < 100 || $+{y} >= 1000)) {
+              $col_formats[$i] = "YY/MM/DD";
+              btw "Recognized '$_' as $col_formats[$i] format" if $debug;
+              next
+            }
+          }
+          if (m#\b(?<m>\d\d)/(?<d>\d\d)/(?<y>(?:[12]\d)?\d\d)\b#) {
+            if ($+{y} < 100 || $+{y} >= 1000) {
+              if ($+{d} > 12 && $+{d} <= 31 && $+{m} >= 1 && $+{m} <= 12) {
+                $col_formats[$i] = "MM/DD/YY";
+                btw "Recognized '$_' as $col_formats[$i] format" if $debug;
+                next
+              }
+              elsif ($+{m} > 12 && $+{m} <= 31 && $+{d} >= 1 && $+{d} <= 12) {
+                $col_formats[$i] = "DD/MM/YY";
+                btw "Recognized '$_' as $col_formats[$i] format" if $debug;
+                next
+              }
+            }
+          }
+          # Things to force to be read as text fields:
+          # 1. Leading zeroes
+          # 2. Leading ascii minus (\x{2D}) rather than math minus \N{U+2212}.
+          #    This prevents conversion to the Unicode math minus when LO
+          #    reads the CSV.  The assumption is that if the input has an ascii
+          #    minus then the original spreadsheet format was "text" not
+          #    numeric.
+          if (/^[\x{2D}0]/) {
+            $col_formats[$i] = "text";
+            btw "Recognized '$_' as $col_formats[$i] format" if $debug;
+          }
+        }
+      }
+    }
+    $opts->{col_formats} = \@col_formats;
+  }#determine_csv_col_formats
+
+  # ==BODY==
   unless ($opts->{cvt_to}) {
     if ($opts->{outpath} && $opts->{outpath} =~ /\.([^.]+)$/) {
       $opts->{cvt_to} = $1;
@@ -1085,124 +1166,46 @@ btw dvis '(no changes needed) %ncols_dist' if $debug;
   }
   $opts->{cvt_from} =~ s/^\.txt$/.csv/i if $opts->{cvt_from};
 
+  # Detect file format and, if CSV, encoding
+  my ($octets, $rows);
   if (!$opts->{cvt_from} || $opts->{cvt_from} eq "csv") {
-    # Slurp the file content and examine it.  This is needed when:
-    #   1. We don't know what the input format is
-    #   2. If the input is CSV, when we need to check for unquoted
-    #      leading zeroes and quote them to avoid corruption on import.
-    my $octets = $opts->{inpath_sans_sheet}->slurp_raw;
-
-    # First verify or guess the input encoding
-    $opts->{input_encoding} //= $default_input_encodings;
-    my @enclist = split m#,#, $opts->{input_encoding};
-    if (@enclist > 1) {
-      $octets //= $opts->{inpath_sans_sheet}->slurp_raw;
-      for my $enc (@enclist) {
-        eval { decode($enc, $octets, Encode::FB_CROAK|Encode::LEAVE_SRC) };
-        if ($@) {
-           btw "Input encoding '$enc' did not work...($@)\n" if $debug;
-           next;
-        }
-        btw "Input encoding '$enc' seems to work.\n" if $debug;
-        @enclist = ($enc);
-        last
-      }
-      #croak "Could not detect encoding of $opts->{inpath_sans_sheet}\n" 
-      confess "Could not detect encoding of $opts->{inpath_sans_sheet}\n" 
-        if @enclist > 1;
-    }
-    $opts->{input_encoding} = $enclist[0];
-
-    my $chars; 
-    eval { $chars=decode($opts->{input_encoding},$octets,Encode::FB_CROAK); };
-
-    # Detect the file format if not known.
-    # Actually we only handle CSV in the case, so just check that that's 
-    # what it is (a very half-baked check indeed).
-    if (!$opts->{cvt_from}) {
-      if ($@ eq "" && $chars !~ /\x{0}/) { 
-        # the decode worked, so not obviously binary data
-        my $min_cols_minus1 = 3 - 1;
-        if ($chars =~ /\A(?:.*?,){$min_cols_minus1,}[^,]*[\x{0A}\x{0D}]/s
-            ||
-            $chars =~ /\A(?:.*?\t){$min_cols_minus1,}[^\t]*[\x{0A}\x{0D}]/s
-            ||
-            length($octets)==0) {
-          $opts->{cvt_from} = 'csv';
-        }
-      }
+    determine_input_encoding(\$octets);
+  }
+  if (!$opts->{cvt_from}) {
+    # Detect the file format by looking at the data.  Actually, we only
+    # support CSV in this case, so this is just a (half-baked) sanity check.
+    eval {
+      determine_csv_q_sep(\$octets, \$rows);
       if (!$opts->{cvt_from}) {
-        croak "Can not detect what kind of file ",qsh($opts->{inpath})," is\n";
+        $rows //= do{
+          my $fh = open_input(\$octets);
+          readparse_csv($fh);
+        };
       }
-    }
-    if ($@) {
-      croak "$@\n(input_encoding $opts->{input_encoding} seems to be wrong)\n";
-    }
-
-    # === From here on the input is a CSV ===
-
-    # Detect seprator & quote characters.
-    my $newchars;
-    unless ($opts->{sep_char} && $opts->{quote_char}) {
-      # Try combinations starting with the most-common '"' and ',' while
-      # parsing the file for unsafe unquoted values (throws on syntax error).
-      Q: for my $q ($opts->{quote_char} ? ($opts->{quote_char}) : ("\"", "'")) {
-        my $found_q;
-        SEP: for my $sep ($opts->{sep_char} ? ($opts->{sep_char}):(",","\t")) {
-          btw dvis '--- TRYING $q $sep ---' if $debug;
-          # Preliminary check for an illegal use of the quote char
-          if ($chars =~ /[^${q}${sep}\x{0D}\x{0A}]
-                         ${q}
-                         (?=[^${q}${sep}\x{0D}\x{0A}] | \z)/gx) {
-            btw ivis '>>>quote_char CAN NOT BE $q with sep=$sep because q exists mid-field before pos ${\(pos($chars))}'
-              if $debug;
-            next SEP
-          }
-          # Try parsing for unquoted leading-zero fields
-          eval{ $newchars = detect_unsafe_unquoted($chars, $q, $sep) };
-          if ($@) {
-            if ($@ =~ /parse.*error/i) {
-              btw ivis '>>> q=$q sep=$sep caused parse error\n';
-              next SEP
-            }
-            die $@;
-          }
-          if ($chars =~ /$q/) {
-            warn ivis '>> Detected quote_char=$q sep_char=$sep\n' if $debug;
-            $opts->{quote_char} = $q;
-            $opts->{sep_char} = $sep;
-            last Q;
-          } else {
-            btw ivis '>>> sep_char=$sep seems to work but saw no $q quotes\n' 
-              if $debug;
-          }
-        }
-      }
-    }
-    unless ($opts->{sep_char} && $opts->{quote_char}) {
-      warn "WARNING: Unable to detect CSV quote & separator characters\n"
+    };
+    if ($@ eq "") {
+      warn "> Detected $opts->{input_sans_csv} as a seemingly-valid CSV\n"
         if $debug;
-      $opts->{sep_char} //= ",";
-      $opts->{quote_char} //= '"';
-    }
-    $newchars 
-      //= detect_unsafe_unquoted($chars,$opts->{quote_char},$opts->{sep_char});
-    if ($newchars ne "") {
-      $eff_input = Path::Tiny->tempfile($opts->{ifbase}."_quoted_XXXXX",
-                                        SUFFIX => ".csv");
-      # Will be deleted when the Path::Tiny object goes out of scope
-      $eff_input->spew({binmode => ":encoding($opts->{input_encoding})"},
-                       $newchars);
+      $opts->{cvt_from} = "csv";
+    } else {
+      croak "Can not detect what kind of file ",qsh($opts->{inpath})," is\n";
     }
   }
+
+  if ($opts->{cvt_from} eq "csv") {
+    determine_csv_col_formats(\$octets, \$rows);
+  } else {
+    oops if defined($octets) or defined($rows);
+  }
+
   # Set default ouput_encoding if not specified
   $opts->{output_encoding} //= $default_output_encoding
     if $opts->{cvt_to} eq "csv";
-  $eff_input
+
 }#_determine_enc_tofrom
 
-sub _tool_extract_all_csvs($$$) {
-  my ($opts, $srcpath, $destdir) = @_;
+sub _tool_extract_all_csvs($$) {
+  my ($opts, $destdir) = @_;
 
   _get_exclusive_lock($opts);
   scope_guard { _release_lock($opts); };
@@ -1210,10 +1213,10 @@ sub _tool_extract_all_csvs($$$) {
   delete local $opts->{sheetname};
   local $opts->{allsheets} = 1;
   if (_openlibre_supports_allsheets()) {
-    _convert_using_openlibre($opts, $srcpath, $destdir);
+    _convert_using_openlibre($opts, $opts->{inpath_sans_sheet}, $destdir);
   }
   elsif (_ssconvert_supports_allsheets()) {
-    _convert_using_ssconvert($opts, $srcpath, $destdir);
+    _convert_using_ssconvert($opts, $opts->{inpath_sans_sheet}, $destdir);
   }
   else { croak "Can't extract 'allsheets'.  Please install LibreOffice 7.2 or newer" }
 }
@@ -1221,8 +1224,8 @@ sub _tool_extract_all_csvs($$$) {
 sub _tool_can_extract_csv_byname() { 
   _openlibre_supports_named_sheet() || _ssconvert_supports_named_sheet() 
 }
-sub _tool_extract_one_csv($$$) {
-  my ($opts, $srcpath, $destpath) = @_;
+sub _tool_extract_one_csv($$) {
+  my ($opts, $destpath) = @_;
 
   ## FIXME: This is not quite right--_tool_write_spreadsheet()
   ##  contains almost the same code.  Should be a better factoring...
@@ -1232,17 +1235,17 @@ sub _tool_extract_one_csv($$$) {
 
   confess "should not get here" if $opts->{sheetname};
   if (_openlibre_features->{available}) {
-    _convert_using_openlibre($opts, $srcpath, $destpath);
+    _convert_using_openlibre($opts, $opts->{inpath_sans_sheet}, $destpath);
   } else {
-    _convert_using_ssconvert($opts, $srcpath, $destpath);
+    _convert_using_ssconvert($opts, $opts->{inpath_sans_sheet}, $destpath);
   }
 }
 sub _tool_can_extract_current_sheet() {
   _openlibre_features->{available} || _ssconvert_features->{available}
 }
 
-sub _tool_write_spreadsheet($$$) {
-  my ($opts, $srcpath, $destpath) = @_;
+sub _tool_write_spreadsheet($$) {
+  my ($opts, $destpath) = @_;
 
   _get_exclusive_lock($opts);
   scope_guard { _release_lock($opts); };
@@ -1252,10 +1255,10 @@ sub _tool_write_spreadsheet($$$) {
       carp "WARNING: Sheet name when creating a spreadsheet will be ignored\n";
       delete $opts->{sheetname};
     }
-    _convert_using_openlibre($opts, $srcpath, $destpath);
+    _convert_using_openlibre($opts, $opts->{inpath_sans_sheet}, $destpath);
   }
   elsif (_ssconvert_supports_writing($opts->{cvt_to})) {
-    _convert_using_ssconvert($opts, $srcpath, $destpath);
+    _convert_using_ssconvert($opts, $opts->{inpath_sans_sheet}, $destpath);
   }
   else { croak "Can't create $opts->{cvt_to} spreadsheets.  Please install LibreOffice 7.2 or newer" }
 }
@@ -1263,19 +1266,19 @@ sub _tool_write_spreadsheet($$$) {
 
 # Extract CSVs for every sheet into {outpath} (setting to tmpdir if not preset).
 # If cached CSVs are available they are moved into {outpath}/ .
-sub _extract_all_csvs($$) {
-  my ($opts, $srcpath) = @_;
+sub _extract_all_csvs($) {
+  my ($opts) = @_;
   my $outpath = _final_outpath($opts);
   $outpath->mkpath; # nop if exists, croaks if conflicts with file
 
-  _tool_extract_all_csvs($opts, $srcpath, $outpath); #logs
+  _tool_extract_all_csvs($opts, $outpath); #logs
 }
 
 
 # Extract a single sheet into a CSV at {outpath} (defaulting to temp file).
 # If a cached CSV is available it is moved to {outpath}.
-sub _extract_one_csv($$) {
-  my ($opts, $srcpath) = @_;
+sub _extract_one_csv($) {
+  my ($opts) = @_;
   my $cachedirpath = _cachedir($opts);
 
   my sub _fill_csv_cache() {
@@ -1283,7 +1286,7 @@ sub _extract_one_csv($$) {
     $cachedirpath->mkpath;
     { local $opts->{verbose} = 0;
       #local $opts->{debug} = 0;
-      _tool_extract_all_csvs($opts, $srcpath, $cachedirpath);
+      _tool_extract_all_csvs($opts, $cachedirpath);
     }
   }
 
@@ -1295,7 +1298,7 @@ sub _extract_one_csv($$) {
     my $cached_path = $cachedirpath->child($fname);
     if (! -e $cached_path) {
       if (_tool_can_extract_csv_byname()) {
-        _tool_extract_one_csv($opts, $srcpath, $outpath); #logs
+        _tool_extract_one_csv($opts, $outpath); #logs
         return
       }
       warn ">>Emulating extract-by-name by extracting all csvs into cache...\n"
@@ -1309,7 +1312,7 @@ sub _extract_one_csv($$) {
     return
   }
   elsif (_tool_can_extract_current_sheet()) {
-    _tool_extract_one_csv($opts, $srcpath, $outpath); #logs
+    _tool_extract_one_csv($opts, $outpath); #logs
     return
   }
   else {
@@ -1330,13 +1333,13 @@ sub _extract_one_csv($$) {
     }
   }
 }
-sub _write_spreadsheet($$) {
-  my ($opts, $inpath) = @_;
+sub _write_spreadsheet($) {
+  my ($opts) = @_;
 
   my $outpath = _final_outpath($opts);
   $outpath->remove unless -d $outpath;
 
-  _tool_write_spreadsheet($opts, $inpath, $outpath);
+  _tool_write_spreadsheet($opts, $outpath);
 }
 
 # If {outpath} is not set, set it to a unique output path in $tempdir
@@ -1362,7 +1365,7 @@ sub convert_spreadsheet(@) {
 
   # intuit cvt_from & cvt_to, detect encoding, and pre-process .csv input
   # if needed to avoid corruption of leading zeroes.
-  my $eff_inpath = _determine_enc_tofrom(\%opts); 
+  _determine_enc_tofrom(\%opts); 
 
   my $input_enc = $opts{input_encoding};
   my $output_enc = $opts{output_encoding};
@@ -1385,7 +1388,7 @@ sub convert_spreadsheet(@) {
         # Special case #1: in & out are CSVs but different encodings.
         warn "> Transcoding csv:  $input_enc -> $output_enc\n" 
           if $opts{debug};
-        my $octets = $eff_inpath->slurp_raw;
+        my $octets = $opts{inpath_sans_sheet}->slurp_raw;
         my $chars = decode($input_enc, $octets, Encode::FB_CROAK);
         $octets = encode($output_enc, $chars, Encode::FB_CROAK);
         path(_final_outpath(\%opts))->spew_raw($octets);
@@ -1396,10 +1399,10 @@ sub convert_spreadsheet(@) {
         if (defined $opts{outpath}) {
           warn "> No conversion needed, copying to ",qsh($opts{outpath}),"\n"
             if $opts{verbose};
-          $eff_inpath->copy($opts{outpath});
+          $opts{inpath_sans_sheet}->copy($opts{outpath});
           $done = 1;
         } else {
-          $opts{outpath} = _make_file_permanent(\%opts, $eff_inpath);
+          $opts{outpath} = $opts{inpath_sans_sheet};
           warn "> No conversion needed, returning ", qsh($opts{outpath}),"\n"
             if $opts{verbose};
           $done = 1;
@@ -1414,7 +1417,7 @@ sub convert_spreadsheet(@) {
       my $outpath = path(_final_outpath(\%opts));
       $outpath->mkpath; # nop if exists, croaks if conflicts with file
       my $dest = $outpath->child( $opts{ifbase}.".csv" );
-      my $inpath = _make_file_permanent(\%opts, $eff_inpath);
+      my $inpath = $opts{inpath_sans_sheet};
       symlink($inpath, $dest)
         or croak "symlink $inpath <-- $dest : $!";
       warn "  No conversion needed! Leaving symlink at ", qsh($dest),"\n"
@@ -1424,14 +1427,14 @@ sub convert_spreadsheet(@) {
   }
   if (! $done) {
     if ($opts{allsheets}) {
-      _extract_all_csvs(\%opts, $eff_inpath);
+      _extract_all_csvs(\%opts);
     } 
     else {
       # Result will be a single file.
       if ($opts{cvt_to} eq "csv") {
-        _extract_one_csv(\%opts, $eff_inpath);
+        _extract_one_csv(\%opts);
       } else {
-        _write_spreadsheet(\%opts, $eff_inpath);
+        _write_spreadsheet(\%opts);
       }
     }
   }

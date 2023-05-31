@@ -251,15 +251,14 @@ The resulting message string includes the location of the
 call to your code, the name of the public function or method called, 
 and a representation of the inputs and outputs.
 
-The "public" function/method name shown is not necessarily the immediate caller of the
-logging function.
+The "public" function/method name shown is not necessarily the immediate caller of the logging function.
 
 =head2 log_call {OPTIONS}, [INPUTS], [RESULTS]
 
 Prints the result of calling C<fmt_call> with the same arguments.
 
-The message is written to STDERR or the file handle given by
-C<< logdest => FILEHANDLE >> in I<OPTIONS>.
+The message is written to STDERR unless
+C<< logdest => FILEHANDLE >> is included in I<OPTIONS>.
 
 =head2 $msgstring = fmt_call {OPTIONS}, [INPUTS], [RESULTS]
 
@@ -299,17 +298,20 @@ B<{OPTIONS}>
 =item self =E<gt> objref
 
 If your sub is a method, your can pass C<self =E<gt> $self> and the called-upon
-object will be displayed separately before the method name.  The object is displayed
-only for the first call in a series of consecutive calls with the same C<self> value.
+object will be displayed separately before the method name.  
+To reduce clutter, the object is 
+displayed for only the first call in a series of consecutive calls with the 
+same C<self> value.
 
 =item fmt_object =E<gt> CODE
 
 Format a reference to a blessed thing, or the value of the C<self> option, if
 passed, whether blessed or not.
 
-The sub is called with args C<($state, $thing)>.  It should return either C<$thing>
-or an alternative representation string.  By default, the type/classname is shown
-and an abbreviated address (see C<addrvis> in L<Data::Dumper::Interp>).
+The sub is called with args C<($state, $thing)>.  It should return
+either C<$thing> or an alternative representation string.  By default,
+the type/classname is shown and an abbreviated address (see C<addrvis>
+in L<Data::Dumper::Interp>).
 
 C<$state> is a ref to a hash where you can store anything you want; it persists
 only during the current C<fmt_call> invocation.
@@ -325,8 +327,8 @@ The second argument contains results from C<caller(N)>.
 Your sub should return True if the frame represents the call to be described 
 in the message.
 
-The default callback is C<sub{ $_[1][3] =~ /::[a-z][^:]*$/ }>, which
-looks for any sub named with an initial [a-z].
+The default callback is S<<< C<sub{ $_[1][3] =~ /(?:::|^)[a-z][^:]*$/ }> >>>,
+which looks for any sub named with an initial [a-z].
 
 =back
 

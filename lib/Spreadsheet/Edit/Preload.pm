@@ -17,8 +17,8 @@ require Spreadsheet::Edit;
 our @CARP_NOT = ('Spreadsheet::Edit');
 
 sub import {
-#use Data::Dumper::Interp; say dvis '###Preload import @_';
   my $pkg = shift;  # that's us
+#use Data::Dumper::Interp; say "###Preload import pkg=$pkg ",avis(@_);
 
   my $callpkg = caller($Exporter::ExportLevel);
 
