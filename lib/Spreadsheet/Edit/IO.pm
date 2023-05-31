@@ -59,6 +59,25 @@ our %SpreadsheetEdit_Log_Options = (
 
 my $progname = path($0)->basename;
 
+sub _get_username(;$) {
+  my ($uid) = @_;
+  $uid //= eval{ $> } // -1; # default to EUID
+  state $answer = {};
+  return $answer->{$uid} //= do {
+    # https://stackoverflow.com/questions/12081246/how-to-get-system-user-full-name-on-windows-in-perl
+    eval { getpwuid($uid) // $uid }
+    || 
+    ($^O =~ /MSWin/ && $uid == (eval{$>}//-1) && eval{  # untested...
+      require Win32API::Net;
+      Win32API::Net::UserGetInfo($ENV{LOGONSERVER}||'',Win32::LoginName(),10,my $info={}); 
+      $info->{fullName}
+    })
+    ||
+    "UID$uid"
+  };
+}
+
+
 # A private Libre/Open Office profile dir is needed to avoid conflicts
 # with interactive sessions, see
 # https://ask.libreoffice.org/en/question/290306/how-to-start-independent-lo-instance-process
@@ -67,8 +86,7 @@ my $progname = path($0)->basename;
 # (actually one for each unique external tool which needs one).
 # Sharing is okay because we get an exclusive lock before actually using it.
 state $profile_parent_dir = do{ # also used for lockfile
-  my $euid = $>;
-  my $user = $euid; # getpwuid($euid) // $euid;
+  my $user = _get_username();
   (my $dname = __PACKAGE__."_${user}_profileparent") =~ s/::/-/g;
   (my $path = path(File::Spec->tmpdir)->child($dname))->mkpath;
   $path # Path::Tiny
@@ -95,8 +113,7 @@ sub _get_exclusive_lock($) { # returns lock object
     my $owner = (<$lock_fh>)[-1] // "";  # pid NNN (progname)
     { my ($pid) = ($owner =~ /pid (\d+)/) or last;
       my @s = stat("/proc/$pid") or last;
-      my @pw = getpwuid($s[4]) or last;
-      $owner = "$pw[0] ".$owner
+      $owner = _get_username( $s[4] );
     }
     my $ownermsg = $owner ? " held by $owner" : "";
     warn ">> ($$) Waiting for exclusive lock${ownermsg}...\n"
@@ -457,8 +474,7 @@ sub _create_tempdir_if_needed($) {
     #(my $template = __PACKAGE__."_XXXXX") =~ s/::/-/g;
     #Path::Tiny->tempdir($template)
     my $pid = $$;
-    my $euid = $>;
-    my $user = getpwuid($euid) // $euid;
+    my $user = _get_username();
     (my $dname = __PACKAGE__."_${user}_${pid}_tempdir") =~ s/::/-/g;
     (my $path = path(File::Spec->tmpdir)->child($dname))->mkpath;
     $path
