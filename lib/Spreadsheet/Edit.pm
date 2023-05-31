@@ -444,7 +444,10 @@ sub _fmt_colx(;$$) {
       if (ref $_) {
         push @items, $$_; # \"string" means insert "string" literally
       } else {
-        additem($_, $hash{$_}//oops(dvis '$_ $specs\n$hash'));
+        # Work around old Perl lexical sub limitations...
+        my $item=$hash{$_}; 
+          oops(dvis '$_ $specs hash=',hvis(%hash)) unless defined $item;
+        additem($_, $item);
         delete $hash{$_} // oops;
       }
     }
@@ -455,12 +458,17 @@ sub _fmt_colx(;$$) {
   my @ABCs    = subset [ map{ my $A = cx2let($_);
                               u($hash{$A}) eq $_ ? $A : \"  "
                             } 0..$num_cols-1 ];
+
+  # More lexical sub bug work-arounds...
+  my @ss1 = subset [sortbycx grep{ /^(=.*\D)\w+$/ } keys %hash]; # normal titles
+  my @ss2 = subset [sortbycx grep{ /^\d+$/ } keys %hash];        # numeric titles
+  my @ss3 = subset [sortbycx keys %hash];                        # oddities
   __fill [
            @ABCs,
-           subset [sortbycx grep{ /^(=.*\D)\w+$/ } keys %hash], # normal titles
-           subset [sortbycx grep{ /^\d+$/ } keys %hash],        # numeric titles
-           subset [sortbycx keys %hash],                        # oddities
-         ], $indent, $foldwidth
+           @ss1,
+           @ss2,
+           @ss3,
+         ], $indent, $foldwidth;
 }
 
 # Is a title a special symbol or looks like a cx number?

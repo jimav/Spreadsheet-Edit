@@ -591,17 +591,14 @@ sub verif_eval_err(;$) {  # MUST be called on same line as the 'eval'
   my $fn = $caller[1];
   my $ex = $@;
   confess "expected error did not occur at $fn line $ln\n",
-          fmtsheet(sheet({package => $caller[0]}))
     unless $ex;
 
   if ($ex !~ / at $fn line $ln\.?(?:$|\n)/s) {
     confess "Got UN-expected err (not ' at $fn line $ln'):\n«$ex»\n",
-            fmtsheet(sheet({package => $caller[0]})),
             "\n";
   }
   if ($msg_regex && $ex !~ qr/$msg_regex/) {
     confess "Got UN-expected err (not matching $msg_regex) at $fn line $ln'):\n«$ex»\n",
-            fmtsheet(sheet({package => $caller[0]})),
             "\n";
   }
   verif_no_internals_mentioned($ex);

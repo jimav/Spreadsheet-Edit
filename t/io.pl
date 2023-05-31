@@ -21,7 +21,7 @@ use Spreadsheet::Edit::IO qw/convert_spreadsheet/;
 
 use Test::Deep::NoTest qw/eq_deeply/;
 
-{ my $path = eval{ Spreadsheet::Edit::IO::_openlibre_path() };
+{ my $path; eval{ $path = Spreadsheet::Edit::IO::_openlibre_path() };
   if (!$path && $@ =~ /not find.*Libre/i) {
     say __FILE__,": Skipping all because LibreOffice is not installed"
       unless $silent;
@@ -67,7 +67,8 @@ sub doread($$) {
   my ($opts, $inpath) = @_;
   sheet undef;
   eq_deeply(sheet(), undef) or confess "sheet() did not return undef";
-  eq_deeply(eval{$num_cols},undef) or confess "num_cols unexpectedly valid";
+
+  eq_deeply(eval{my $dum=$num_cols},undef) or confess "num_cols unexpectedly valid";
   read_spreadsheet {debug => $debug, verbose => $verbose, %$opts}, $inpath;
   confess "num_cols is not positive" unless $num_cols > 0;
 }
@@ -78,7 +79,7 @@ doread({sheetname => "Sheet1"}, $input_xlsx_path."!Sheet1"); verif_Sheet1;
 doread({sheetname => "Another Sheet"}, $input_xlsx_path."!Another Sheet"); verif_Another_Sheet;
 
 # Confirm that conflicting specs are caught
-eval{ read_spreadsheet {sheetname => "Sheet1", verbose => $verbose}, $input_xlsx_path."!Another Sheet" };
+eval{my $dum=read_spreadsheet {sheetname => "Sheet1", verbose => $verbose}, $input_xlsx_path."!Another Sheet" };
 die "Conflicting sheetname opt and !suffix not caught" if $@ eq "";
 
 # Extract all sheets

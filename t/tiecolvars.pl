@@ -41,7 +41,7 @@ BEGIN {
   # The :safe option should cause a croak before tying it,
   # here inside BEGIN{}
   our $Myvar;
-  eval { insert_cols '>$', "Myvar"; } && die;
+  eval { my $dummy = insert_cols '>$', "Myvar"; } && die;
   die "WRONG ERR:$@" unless $@ =~ /Myvar.*clashes/;
 }
 
