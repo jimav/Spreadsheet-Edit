@@ -8,6 +8,7 @@
 use strict; use warnings FATAL => 'all'; use utf8;
 use feature qw(say state lexical_subs current_sub);
 no warnings qw(experimental::lexical_subs);
+use 5.18.0; # lexical subs with bug we have worked around
 
 package Spreadsheet::Edit;
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion
