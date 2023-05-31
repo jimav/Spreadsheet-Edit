@@ -90,10 +90,14 @@ my $got = [sort map{$_->basename} $dirpath->children];
 my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
 eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
 
+#say "### Sheet1.csv content ###";
+#print $dirpath->child("Sheet1.csv")->slurp_utf8;
+#say "##########################";
+
 my $testcsv_path = $dirpath->child("Sheet1.csv");
 my $exp_chars = $testcsv_path->slurp_utf8();
 
-# Convert csv to spreadsheet and back
+# Round-trip csv -> ods -> csv check
 {
   my $h1 = doconvert(inpath => $testcsv_path, cvt_to => "ods");
   my $h2 = doconvert(inpath => $h1->{outpath}, cvt_to => "csv");

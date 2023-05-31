@@ -57,8 +57,9 @@ sub import {
   use 5.011;  # cpantester gets warning that 5.11 is the minimum acceptable
   use 5.018;  # lexical_subs
   require feature;
-  feature->import::into($target, qw/state say current_sub lexical_subs fc/);
+  # Perl 5.18.0 seems to require the "no experimental..." before the "use feature"
   warnings->unimport::out_of($target, "experimental::lexical_subs");
+  feature->import::into($target, qw/state say current_sub lexical_subs fc/);
 
   # die if obsolete or dangerous syntax is used
   require indirect;

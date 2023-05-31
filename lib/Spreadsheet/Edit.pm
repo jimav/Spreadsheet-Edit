@@ -5,10 +5,10 @@
 
 # Pod documentation is below (use perldoc to view)
 
-use strict; use warnings FATAL => 'all'; use utf8;
-use feature qw(say state lexical_subs current_sub);
-no warnings qw(experimental::lexical_subs);
 use 5.18.0; # lexical subs with bug we have worked around
+use strict; use warnings FATAL => 'all'; use utf8;
+no warnings qw(experimental::lexical_subs);
+use feature qw(say state lexical_subs current_sub);
 
 package Spreadsheet::Edit;
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion

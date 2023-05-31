@@ -593,12 +593,8 @@ sub _convert_using_openlibre($$$) {
       # Token 7: On input: true => Quoted cells are always read a 'text',
       #  effectively disabling Token 8.  This must be false to recognize dates 
       #   like "Jan 1, 2000" which by necessity must be quoted for the comma,
-      #   but will **CORRUPT** zip codes with leading zeroes!
-      
-#FIXME:
-#We need to identify *columns* which must be quoted and generate Token 5
-#accordingly.  With Tok7=false even "001" looses the leading zeroes!
-
+      #   but will **CORRUPT** zip codes with leading zeroes unless
+      #   col_formats overrides (which it does now by default).
       .",false" # default: false
       # Token 8: on input: "Detect Special Numbers", i.e. date or time values
       #   in human form, numbers in scientific (expondntial) notation etc.
@@ -643,15 +639,17 @@ sub _convert_using_openlibre($$$) {
       # *** bad and makes t/ tests messier, but preserves information
       # *** that such cells were not numbers or dates, etc.  This ensures
       # *** that Zip codes, etc. with leading zeroes won't be corrupted
-      # *** if converted back into a spreadsheet.
-      # ??? FIXME/TODO:
-      #    We could post-process to remove quotes from obviously-text fields.
-      #    Seems reasonable because we know the quoting convention used
-      #    (because we specify it here)... unlike pre-processing on input.
-      .",true"
+      # *** if converted back into a spreadsheet
+      # Option #1: Specify true to quote all cells on export, then post-process
+      #   the result to un-quote obviously safe cells (for yet more overhead).
+      # Option #2: Specify false, and assume the resulting CSV will never
+      #   be imported into a spreadsheet except via us, and we pre-scan
+      #   the data to generate {col_formats} so will usually be safe.
+      # 5/30/23: Switching to Option #2...
+      .",false"
       # Token 8: on output: true to store number as numbers; false to
       #          store number cells as text.  No UI equivalent.
-      ."," # default: true (for export)
+      .",true" # default: documented as true (for export) BUT IS NOT!
       # Token 9: "Save cell contents as shown"
       #   Generally we DO NOT want this because things like dates
       #   can be formatted many different ways.
