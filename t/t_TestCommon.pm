@@ -191,7 +191,7 @@ sub run_perlscript(@) {
   my @perlargs = @_; 
   unshift @perlargs, "-MCarp=verbose" if $Carp::Verbose;
   unshift @perlargs, "-I$_" foreach (@INC);
-  if ($^O =~ /win/i) { 
+  if ($^O eq "MSWin32") { 
     for (my $ix=0; $ix <= $#perlargs; $ix++) {
       if ($perlargs[$ix] =~ /^-w?[Ee]$/) {
         # Passing perl code in an argument is impractical in DOS/Windows
