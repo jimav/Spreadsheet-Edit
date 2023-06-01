@@ -187,9 +187,34 @@ sub string_to_tempfile($@) {
 #        Otherwise wide chars will be corrupted
 #
 sub run_perlscript(@) {
-  my @perlargs = @_;  # might be ('-e', 'perlcode...')
+  my $tf; # keep in scope until no longer needed
+  my @perlargs = @_; 
   unshift @perlargs, "-MCarp=verbose" if $Carp::Verbose;
-  local $ENV{PERL5LIB} = join(":", @INC);
+  unshift @perlargs, "-I$_" foreach (@INC);
+  if ($^O =~ /win/i) { 
+    for (my $ix=0; $ix <= $#perlargs; $ix++) {
+      if ($perlargs[$ix] =~ /^-w?[Ee]$/) {
+        # Passing perl code in an argument is impractical in DOS/Windows
+        $tf = Path::Tiny->tempfile("perlcode_XXXXX");
+        $tf->spew_utf8($perlargs[$ix+1]);
+        splice(@perlargs, $ix, 2, $tf->stringify);
+      }
+      for ($perlargs[$ix]) {
+        if (/^-\*[Ee]/) { oops "unhandled perl arg" }
+        s/"/\\"/g;
+        if (/[\s\/"']/) { 
+          $_ = '"' . $_ . '"';
+        }
+      }
+    }
+  }
+#use Data::Dumper::Interp;
+#say dvisq '##run_perlscript: $^X\n  @perlargs';
+#if (defined $tf) {
+#  say "################### tf $tf ###";
+#  print $tf->slurp_utf8;
+#  say "##############################";
+#}
   system $^X, @perlargs;
 }
 

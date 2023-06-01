@@ -38,8 +38,10 @@ BEGIN{
        use Spreadsheet::Edit::Preload '.$opthash_comma.vis($main::tdata1_path->stringify).';
        ');
   };
-  like($err, qr/TitleA.*clash.*Existing.*sub/s, "Detect clash with sub name");
-  is($out, "", "Clash diags on stderr, not stdout");
+  like($err, qr/TitleA.*clash.*Existing.*sub/s, "Detect clash with sub name",
+       dvis 'ERR:$err\nOUT:$out\n');
+  is($out, "", "Clash diags on stderr, not stdout",
+       dvis 'ERR:$err\nOUT:$out\n');
 }
 
 { my ($out, $err) = capture {

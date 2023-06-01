@@ -1049,7 +1049,7 @@ EOF
 
 # write_csv
 
-    my $outfile = "/tmp/output.csv";
+    my $outfile = Path::Tiny->tempfile("output_XXXXX", SUFFIX => ".csv");
     write_csv "$outfile";
 
     { local $/ = undef; # slurp
