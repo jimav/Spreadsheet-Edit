@@ -308,9 +308,17 @@ END{
 }
 #--------------- (end of :silent stuff) ---------------------------
 
-# N.B. package dir might have version like ".../ODF-lpOD_Helper-3.008/..."
-dirname(abs_path(__FILE__)) =~ m#.*/(\w+)-\w[-\w\.]*/# or die "Cant intuit testee module name";
-(my $testee_top_module = $1) =~ s/-/::/g;
+# Find the ancestor build or checkout directory (it contains a "lib" subdir)
+# and derive the package name from e.g. "My-Pack" or "My-Pack-1.234"
+my $testee_top_module;
+for (my $path=path(__FILE__)->absolute;  ; $path=$path->parent) {
+  if (-d $path->child("lib")) {
+    my @pieces = split /-/, $path->basename;
+    if ($pieces[-1] =~ /^\d/) { pop @pieces } # pop version
+    $testee_top_module = join('::', @pieces);
+    last;
+  }
+}
 oops unless $testee_top_module;
 
 sub verif_no_internals_mentioned($) { # croaks if references found

@@ -4260,9 +4260,13 @@ And C<tie_column_vars '@NAME'> would tie user array variables to columns.
 
 =back
 
-=head1 AUTHOR / LICENSE
+=head1 AUTHOR
 
-Jim Avera (jim.avera at gmail)  /   Public Domain or CC0.
+Jim Avera (jim.avera at gmail)  
+
+=head1 LICENSE
+
+Public Domain or CC0.
 
 =for Pod::Coverage meta_info
 

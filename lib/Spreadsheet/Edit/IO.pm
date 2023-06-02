@@ -34,7 +34,7 @@ use File::Copy::Recursive ();
 use Path::Tiny qw/path/;
 
 # Path::Tiny OBVIATES NEED for many but we still need this
-use File::Spec::Functions qw/devnull tmpdir/;
+use File::Spec::Functions qw/devnull tmpdir rootdir catdir catfile/;
 
 # Still sometimes convenient...
 use File::Basename qw(basename dirname);
@@ -365,15 +365,20 @@ sub _openlibre_path() {
         # Maximum depth: /*/*/<unpackparent>/opt/libreofficeXXX/program/
         my $depth = scalar(() = m#(/)#g);
         if (basename($_) eq "opt") {
-          my $prefix = path($_)->parent->stringify;
+          my $prefix = path($_)->parent;
           for my $o_l (qw/libre open/) {
-            if (my $path = ( sort +bsd_glob("$_/${o_l}*/program/soffice", 
-                                            GLOB_NOCASE) )[-1]) {
-              (my $subpath = $path) =~ s/^\Q${prefix}\E// or oops;
+            # eval because I'm suspicious of the glob on Windows
+            my $pattern = catfile($_,"${o_l}*","program","soffice");
+            my @hits; eval{ @hits = sort +bsd_glob($pattern, GLOB_NOCASE) };
+            if (@hits) {
+              my $path = path($hits[-1]);
+              $prefix->subsumes($path) or oops dvis '$prefix $path';
+              my $subpath = $path->relative($prefix);
               if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
                 @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
               }
             }
+            else { btw dvis '##glob failed: $pattern\n$@' if $@; }
           }
         }
         elsif ($depth == 4) {
@@ -387,7 +392,7 @@ sub _openlibre_path() {
       dangling_symlinks => 0,
       no_chdir => 1
     },
-    "/", (defined($ENV{HOME}) ? $ENV{HOME} : ())
+    File::Spec->rootdir(), (defined($ENV{HOME}) ? $ENV{HOME} : ())
   );
   $OLpath_answer = path(
      $results{libre}{path} // $results{open}{path} 
@@ -400,7 +405,7 @@ sub _openlibre_features() {
   state $hash;
   return $hash if defined $hash;
   my $prog = _openlibre_path() // return(($hash={ available => 0 }));
-  my ($s) = (qx/$prog --version/ =~ /Libre.*? (\d+\.\d+\.\w+)/);
+  my ($s) = (qx/$prog --version 2>&1/ =~ /Libre.*? (\d+\.\d+\.\w+)/);
   confess "$prog --version DID NOT WORK" unless $s;
   my $version = version->parse("v".($s//"0.1"));
   $hash = {
@@ -717,8 +722,6 @@ sub _convert_using_openlibre($$$) {
 
   $opts->{stdout_to_stderr} = 1;       # send "convert..." message to stderr
   $opts->{suppress_stderr} = !$debug;  # and suppress it unless tracing
-
-btw "############################## INPUT CONTENT $src :\n",vis(path($src)->slurp_utf8),"\n++++++++++++++++++++++++++++++++++++++++" if $debug;
 
   my $cmdstatus = _runcmd($opts, @cmd);
 
