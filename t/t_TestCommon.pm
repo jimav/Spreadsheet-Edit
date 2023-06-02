@@ -189,8 +189,8 @@ sub string_to_tempfile($@) {
 sub run_perlscript(@) {
   my $tf; # keep in scope until no longer needed
   my @perlargs = @_; 
+  @perlargs = ((map{ "-I$_" } @INC), @perlargs);
   unshift @perlargs, "-MCarp=verbose" if $Carp::Verbose;
-  unshift @perlargs, "-I$_" foreach (@INC);
   if ($^O eq "MSWin32") { 
     for (my $ix=0; $ix <= $#perlargs; $ix++) {
       if ($perlargs[$ix] =~ /^-w?[Ee]$/) {
