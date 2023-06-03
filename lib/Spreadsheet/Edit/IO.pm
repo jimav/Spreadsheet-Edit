@@ -42,6 +42,7 @@ use File::Basename qw(basename dirname);
 use File::Which qw/which/;
 use Guard qw(guard scope_guard);
 use Fcntl qw(:flock :seek);
+use Scalar::Util qw/blessed/;
 use List::Util qw/none all notall first min max/;
 use Encode qw(encode decode);
 # DDI 5.015 is needed for 'qshlist'
@@ -106,7 +107,7 @@ sub _get_exclusive_lock($) { # returns lock object
   my $opts = shift;
   my $lockfile_path = $profile_parent_dir->child("LOCKFILE");
   open my $lock_fh, "+>>", $lockfile_path or die $!;
-  chmod 0666, $lock_fh;
+  eval { chmod 0666, $lock_fh; }; # sometimes not implemented 
   $opts->{lockfile_fh} = $lock_fh;
   while (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
     seek($lock_fh, 0, SEEK_SET) or die;
@@ -454,7 +455,8 @@ sub _runcmd($@) {
 
 sub _fmt_outpath_contents($) {
   my $outpath = $_[0]->{outpath} // oops;
-  return "" unless -d $outpath;
+  return "(outpath does not exist)" unless -e $outpath;
+  return "(outpath is not a directory)" unless -d $outpath;
   "\n  outpath contains: "
          .join(", ",map{qsh basename $_} path($outpath)->children);
 }
@@ -1366,8 +1368,9 @@ sub _final_outpath($) {
   if (defined $opts->{outpath}) {
     return path($opts->{outpath});
   } else {
+    my $suf = $opts->{cvt_to} unless $opts->{allsheets};
     return( 
-      ($opts->{outpath}=_path_under_tempdir($opts, suf=>$opts->{cvt_to})) 
+      ($opts->{outpath}=_path_under_tempdir($opts, suf=>$suf)) 
     );
   }
 }
@@ -1414,7 +1417,7 @@ sub convert_spreadsheet(@) {
         # Special case #2: No conversion is needed: Just copy the file or 
         #   return the input path itself as the output
         if (defined $opts{outpath}) {
-          warn "> No conversion needed, copying to ",qsh($opts{outpath}),"\n"
+          warn "> No conversion needed, copying into ",qsh($opts{outpath}),"\n"
             if $opts{verbose};
           $opts{inpath_sans_sheet}->copy($opts{outpath});
           $done = 1;
@@ -1435,10 +1438,16 @@ sub convert_spreadsheet(@) {
       $outpath->mkpath; # nop if exists, croaks if conflicts with file
       my $dest = $outpath->child( $opts{ifbase}.".csv" );
       my $inpath = $opts{inpath_sans_sheet};
-      symlink($inpath, $dest)
-        or croak "symlink $inpath <-- $dest : $!";
-      warn "  No conversion needed! Leaving symlink at ", qsh($dest),"\n"
-        if $opts{verbose};
+      my $s = eval{ symlink($inpath, $dest) };
+      if ($@) { # not supported
+        warn "> No conversion needed! Copying into ", qsh($dest),"\n"
+          if $opts{verbose};
+        $opts{inpath_sans_sheet}->copy($dest);
+      } else {
+        warn "> No conversion needed! Leaving symlink at ", qsh($dest),"\n"
+          if $opts{verbose};
+        croak "symlink $inpath <-- $dest : $!" unless $s;
+      }
       $done = 1;
     }
   }
@@ -1457,9 +1466,10 @@ sub convert_spreadsheet(@) {
   }
   my $result = {
     defined($output_enc) ? (encoding => $output_enc):(),
-    inpath_sans_sheet => $opts{inpath_sans_sheet}->stringify,
-    (map{ ($_ => $opts{$_}) } grep{ defined $opts{$_} }
-        qw/outpath cvt_from cvt_to sheetname/)
+    (map{ my $v = $opts{$_};
+          ($_ => (blessed($v) ? $v->stringify : $v))
+        } grep{ defined $opts{$_} }
+        qw/inpath_sans_sheet outpath cvt_from cvt_to sheetname/)
   };
   log_call [\%input_opts], [$result, \_fmt_outpath_contents($result)]
     if $opts{verbose};

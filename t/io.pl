@@ -32,7 +32,9 @@ use Test::Deep::NoTest qw/eq_deeply/;
 }
 
 my $cwd = fastgetcwd;
-my $input_xlsx_path = abs2rel(fast_abs_path("$Bin/../tlib/Test.xlsx"), $cwd);
+#my $input_xlsx_path = abs2rel(fast_abs_path("$Bin/../tlib/Test.xlsx"), $cwd);
+my $tlib = path("$Bin/../tlib")->absolute;
+my $input_xlsx_path = $tlib->child("Test.xlsx");
 
 sub verif_Sheet1(;$){
   my $msg = $_[0] // "";
@@ -57,10 +59,15 @@ sub verif_Another_Sheet(;$) {
 
 sub doconvert(@) {
   if (@_ % 2 == 0) {
-    convert_spreadsheet(verbose => $verbose, debug => $debug, @_);
+    #convert_spreadsheet(verbose => $verbose, debug => $debug, @_);
+    unshift @_, (verbose => $verbose, debug => $debug);
+    goto &convert_spreadsheet;
   } else {
     my $inpath = shift;
-    convert_spreadsheet($inpath, verbose => $verbose, debug => $debug, @_);
+    #convert_spreadsheet($inpath, verbose => $verbose, debug => $debug, @_);
+    unshift @_, (verbose => $verbose, debug => $debug);
+    unshift @_, $inpath;
+    goto &convert_spreadsheet;
   }
 }
 sub doread($$) {
@@ -94,7 +101,8 @@ eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
 #print $dirpath->child("Sheet1.csv")->slurp_utf8;
 #say "##########################";
 
-my $testcsv_path = $dirpath->child("Sheet1.csv");
+#my $testcsv_path = $dirpath->child("Sheet1.csv");
+my $testcsv_path = $tlib->child("Sheet1_unquoted.csv");
 my $exp_chars = $testcsv_path->slurp_utf8();
 
 # Round-trip csv -> ods -> csv check
@@ -118,6 +126,16 @@ my $exp_chars = $testcsv_path->slurp_utf8();
   verif_Sheet1 "(extracted csv)";
   my $hash = doconvert(inpath=>$testcsv_path, cvt_to => 'csv');
   die "expected null converstion" unless $hash->{outpath} eq $testcsv_path;
+}
+
+# Extract "allsheets" from a csv (symlink or copy into outdir)
+{ my $h3 = doconvert(allsheets => 1, inpath => $testcsv_path, cvt_to => 'csv');
+  warn dvis '##YY $h3' if $debug;
+  my @got = path($h3->{outpath})->children;
+  unless (@got==1 && (my $got_chars=$got[0]->slurp_utf8) eq $exp_chars) {
+    die "'allsheets' from csv did not work",
+        dvis '\n$testcsv_path\n$h3\n@got\n$got_chars'
+  }
 }
 
 # csv-to-csv with transcoding
