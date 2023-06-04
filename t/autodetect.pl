@@ -37,7 +37,7 @@ defined(sheet()) or die "read_spreadsheet did not create current_sheet";
 ! ${sheet()}->{cmd_nesting} or die "non-zero cmd_nesting";
 my @saved_data = (@rows); # for construct-from-memory tests
 #sheet(undef);  
-sheet({verbose => 1}, undef);  
+sheet({verbose => !$silent}, undef);  
 
 sub test_autodetect($$;$) {
   my ($rs_opthash, $expected_rx, $expected_err_re) = @_;

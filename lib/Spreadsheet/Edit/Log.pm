@@ -175,6 +175,8 @@ sub _fmt_call($;$$) {
       weaken($prev_obj);
     }
     $msg .= ".";
+  } else {
+    $prev_obj = undef;
   }
 
   $msg .= $subname;
@@ -209,7 +211,7 @@ sub fmt_methcall($;@) {
 sub log_methcall {
   my $opts = &_getoptions;
   my $fh = $opts->{logdest};
-  print $fh &_fmt_methcall($opts, @_);
+  print $fh &fmt_methcall($opts, @_);
 }
 
 1;
@@ -242,13 +244,13 @@ Spreadsheet::Edit::Log - log method/function call, args, and return values
 =head1 DESCRIPTION
 
 (This is generic, no longer specific to Spreadsheet::Edit.  Someday it might
-be published as a stand-alone distribution rather than in Spreadsheet-Edit.)
+be published as a stand-alone distribution rather than packaged in Spreadsheet-Edit.)
 
 This provides perhaps-overkill convenience for "verbose logging" and/or debug
 tracing of subroutein calls.
 
 The resulting message string includes the location of the
-call to your code, the name of the public function or method called, 
+user's call, the name of the public function or method called, 
 and a representation of the inputs and outputs.
 
 The "public" function/method name shown is not necessarily the immediate caller of the logging function.
@@ -270,37 +272,43 @@ A message string is composed and returned.   The general form is:
  or
   File:linenum Obj<address>->methname input,items,... ==> output,items,...\n
 
-C<[INPUTS]> and C<[RESULTS]> are each a ref to an array of items or
-a single non-aref item, which are used to form a comma-separated list.
+C<[INPUTS]> and C<[RESULTS]> are each a ref to an array of items (or
+a single non-aref item), used to form comma-separated lists.
 
 Each item is formatted like with I<Data::Dumper>, i.e. strings are "quoted"
 and complex structures serialized; printable Unicode characters are shown as
 themselves (rather than hex escapes)
 
-... with one exception:
+... with two exceptions:
 
 =over
 
+=item 1. 
+
 If an item is a reference to a a string then the string is inserted as-is (unquoted),
 and unless the string is empty, adjacent commas are suppressed.
+This allows concatenating arbitrary text with values formatted with Data::Dumper.
+
+=item 2. 
+
+If an item is an object (blessed reference) then only it's type and
+abbreviated address are shown, unless overridden via
+the C<fmt_object> option described below.
 
 =back
 
-This allows concatenating arbitrary text to regular values formatted with Data::Dumper.
-
-
 B<{OPTIONS}>
 
-(See "Default OPTIONS" below to specify statically)
+(See "Default OPTIONS" below to specify most of these statically)
 
 =over
 
 =item self =E<gt> objref
 
-If your sub is a method, your can pass C<self =E<gt> $self> and the called-upon
-object will be displayed separately before the method name.  
-To reduce clutter, the object is 
-displayed for only the first call in a series of consecutive calls with the 
+If your sub is a method, your can pass C<self =E<gt> $self> and 
+the the invocant will be displayed separately before the method name.
+To reduce clutter, the invocant is 
+displayed for only the first of a series of consecutive calls with the 
 same C<self> value.
 
 =item fmt_object =E<gt> CODE
@@ -308,7 +316,7 @@ same C<self> value.
 Format a reference to a blessed thing, or the value of the C<self> option, if
 passed, whether blessed or not.
 
-The sub is called with args C<($state, $thing)>.  It should return
+The sub is called with args ($state, $thing).  It should return
 either C<$thing> or an alternative representation string.  By default,
 the type/classname is shown and an abbreviated address (see C<addrvis>
 in L<Data::Dumper::Interp>).
@@ -334,12 +342,15 @@ which looks for any sub named with an initial [a-z].
 
 =head2 $string = fmt_methcall {OPTIONS}, $self, [INPUTS], [RESULTS]
 
+A short-hand for
+
+  $string = fmt_call {OPTIONS, self => $self}, [INPUTS], [RESULTS]
+
 =head2 log_methcall {OPTIONS}, $self, [INPUTS], [RESULTS]
 
-These are short-hands for 
+A short-hand for
 
-   $string = fmt_call {OPTIONS, self => $self}, [INPUTS], [RESULTS]
-   log_call {OPTIONS, self => $self}, [INPUTS], [RESULTS]
+  log_call {OPTIONS, self => $self}, [INPUTS], [RESULTS]
 
 Usually {OPTIONS} can be omitted, so the short-hand form reduces to
 S<< C<log_methcall $self, [INPUTS], [RESULTS]> >>.
@@ -363,15 +374,18 @@ and C<$subname> omits the Package:: prefix.
 
 =head2 Default OPTIONS
 
-You can provide OPTIONS to use by default in 
+B<our %SpreadsheetEdit_Log_Options = (...);> in your package
+will be used to override the built-in defaults (but are still
+overridden by C<{OPTIONS}> passed in individual calls).
 
-  our %SpreadsheetEdit_Log_Options = (...);
 
-in your package. 
+=head1 AUTHOR
 
-=head1 AUTHOR / LICENSE
+Jim Avera (jim.avera gmail) 
 
-Jim Avera (jim.avera gmail) / Public Domain or CC0
+=head1 LICENSE
+
+Public Domain or CC0
 
 =for Pod::Coverage oops
 

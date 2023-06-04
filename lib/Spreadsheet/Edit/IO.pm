@@ -456,7 +456,8 @@ sub _runcmd($@) {
 sub _fmt_outpath_contents($) {
   my $outpath = $_[0]->{outpath} // oops;
   return "(outpath does not exist)" unless -e $outpath;
-  return "(outpath is not a directory)" unless -d $outpath;
+  return "(outpath is a file)" if -f $outpath;
+  return "(outpath is a STRANGE OBJECT)" unless -d $outpath;
   "\n  outpath contains: "
          .join(", ",map{qsh basename $_} path($outpath)->children);
 }
@@ -1439,7 +1440,8 @@ sub convert_spreadsheet(@) {
       my $dest = $outpath->child( $opts{ifbase}.".csv" );
       my $inpath = $opts{inpath_sans_sheet};
       my $s = eval{ symlink($inpath, $dest) };
-      if ($@) { # not supported
+      if ($@) { # symlink unimplmented 
+        btw dvis '>> $@' if $opts{debug};
         warn "> No conversion needed! Copying into ", qsh($dest),"\n"
           if $opts{verbose};
         $opts{inpath_sans_sheet}->copy($dest);

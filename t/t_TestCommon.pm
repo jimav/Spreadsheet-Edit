@@ -78,6 +78,7 @@ use Data::Dumper;
 use Cwd qw/getcwd abs_path/;
 use POSIX qw/INT_MAX/;
 use File::Basename qw/dirname/;
+use Env qw/@PATH @PERL5LIB/;  # ties @PATH, @PERL5LIB
 
 sub bug(@) { @_=("BUG FOUND:",@_); goto &Carp::confess }
 
@@ -110,7 +111,7 @@ if ($nonrandom) {
     $ENV{PERL_PERTURB_KEYS} = "2"; # deterministic
     $ENV{PERL_HASH_SEED} = "0xDEADBEEF";
     #$ENV{PERL_HASH_SEED_DEBUG} = "1";
-    $ENV{PERL5LIB} = join(":", @INC);
+    @PERL5LIB = @INC; # cf 'use Env' above
     exec $^X, $0, @orig_ARGV; # for reproducible results
   }
 }
@@ -176,10 +177,13 @@ sub string_to_tempfile($@) {
   wantarray ? ($path,$fh) : $path
 }
 
-# Run a Perl script in a sub-process.
-# Plain 'system  path/to/script.pl' does not work in a test environment
-# where the correct Perl executable is not at the front of PATH,
-# and also where -I options might have supplied library paths.
+# Run a Perl script in a sub-process. 
+#
+# LANG is unconditionally set to indicate UTF-8 stdio regardless of the
+# actual test environment (because the output will be consumed by a test
+# checker rather than actually displayed on the real STDOUT/ERR).
+#
+# Also provides -I options to mimic @INC (PERL5LIB is often not set)
 #
 # This is usually enclosed in Tiny::Capture::capture { ... }
 #    ==> IMPORTANT: Be sure STDOUT/ERR has :encoding(...) set beforehand
@@ -208,13 +212,8 @@ sub run_perlscript(@) {
       }
     }
   }
-#use Data::Dumper::Interp;
-#say dvisq '##run_perlscript: $^X\n  @perlargs';
-#if (defined $tf) {
-#  say "################### tf $tf ###";
-#  print $tf->slurp_utf8;
-#  say "##############################";
-#}
+  delete local $ENV{LC_ALL};
+  local $ENV{LANG} = "C.UTF-8";
   system $^X, @perlargs;
 }
 
