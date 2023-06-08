@@ -8,6 +8,7 @@ use feature qw(say state lexical_subs current_sub);
 no warnings qw(experimental::lexical_subs);
 
 package Spreadsheet::Edit::IO;
+$Spreadsheet::Edit::IO::VERSION = 999.999; # over-ridden in released dist.
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion
 # DATE from Dist::Zilla::Plugin::OurDate
 
@@ -25,8 +26,6 @@ our @EXPORT_OK = qw/@sane_CSV_read_options @sane_CSV_write_options/;
 
 use version ();
 use Carp;
-sub oops(@) { @_=("\n".__PACKAGE__." **oops**: @_\n"); goto &Carp::confess }
-sub btw(@) { local $_=join("",@_); s/\n\z//s; warn((caller(0))[2].": $_\n"); }
 
 use File::Copy ();
 use File::Copy::Recursive ();
@@ -40,6 +39,7 @@ use File::Spec::Functions qw/devnull tmpdir rootdir catdir catfile/;
 use File::Basename qw(basename);
 
 use File::Which qw/which/;
+use URI::file ();
 use Guard qw(guard scope_guard);
 use Fcntl qw(:flock :seek);
 use Scalar::Util qw/blessed/;
@@ -49,9 +49,10 @@ use File::Glob qw/bsd_glob GLOB_NOCASE/;
 use Digest::MD5 qw/md5_base64/;
 use Text::CSV ();
 # DDI 5.025 is needed for Windows-aware qsh()
-use Data::Dumper::Interp qw/vis visq dvis dvisq ivis ivisq avis qsh qshlist u/;
+use Data::Dumper::Interp 5.025 qw/vis visq dvis dvisq ivis ivisq avis qsh qshlist u/;
 
-use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall/;
+use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall
+                              btw oops/;
 our %SpreadsheetEdit_Log_Options = (
   is_public_api => sub{
      $_[1][3] =~ /(?: ::|^ )(?: [a-z][^:]* | OpenAsCsv | ConvertSpreadsheet )$/x
@@ -94,7 +95,7 @@ state $profile_parent_dir = do{ # also used for lockfile
   (my $path = path(File::Spec->tmpdir)->child($dname))->mkpath;
   $path # Path::Tiny
 };
-sub _get_tool_profile_dir($) {
+sub _get_tool_profdir($) {
   my ($tool_path) = @_;
   my $fingerprint = _file_fingerprint($tool_path);
   (my $toolname = path($tool_path)->basename(qw/\.\w+$/)) =~ s/[^-\w.:]/_/g;
@@ -469,8 +470,8 @@ sub _openlibre_path() {
   );
   $OLpath_answer = path(
      $results{libre}{path} // $results{open}{path}
-       // (!$ENV{SPREADSHEET_EDIT_IGNPATH} && which("soffice")) # installed OO?
-       // croak "Can not find LibreOffice or OpenOffice"
+       || (!$ENV{SPREADSHEET_EDIT_IGNPATH} && which("soffice")) # installed OO?
+       || return(undef)
      )->realpath->canonpath
 }#_openlibre_path
 
@@ -507,16 +508,12 @@ sub _openlibre_features() {
     named_sheet => 0,
     # Supported output formats are too many to list
     ousuf_any => 1,
-    # UserInstallation can not be over-ridden on Windows (as of 7.5.3.2)
-    # See https://bugs.documentfoundation.org/show_bug.cgi?id=155724
-    UserInstallation_ok => ($^O ne "MSWin32"),
   }
 }
 
 sub _openlibre_supports_allsheets() { _openlibre_features->{allsheets} }
 sub _openlibre_supports_named_sheet() { _openlibre_features->{named_sheet} }
 sub _openlibre_supports_writing($) { _openlibre_features->{available} }
-sub _openlibre_UserInstallation_ok() { _openlibre_features->{UserInstallation_ok} }
 
 sub _ssconvert_features() { return { availble => 0 } } # TODO add back?
 sub _ssconvert_supports_allsheets() { _ssconvert_features()->{allsheets} }
@@ -656,14 +653,11 @@ sub _convert_using_openlibre($$$) {
   my $prog = _openlibre_path() // oops;
 
   my $saved_UserInstallation = $ENV{UserInstallation};
-  if (_openlibre_UserInstallation_ok()) {
-    $ENV{UserInstallation} = "file://"._get_tool_profile_dir($prog)->canonpath;
-    warn "Temporarily setting UserInstallation=$ENV{UserInstallation}\n" if $debug;
-  } else {
-    # As of LO 6.5.3.2 UserInstallation may not be over-ridden on Windows.
-    # https://bugs.documentfoundation.org/show_bug.cgi?id=155724
-    warn "Can not use separate profile on windows (yet?)\n" if $debug;
-  }
+  # URI format is file://server/path where 'server' is empty. "file://path" is
+  # "never correct, but is often used" en.wikipedia.org/wiki/File_URI_scheme
+  # Correct examples: file::///tmp/something  file:///C:/somewhere  
+  $ENV{UserInstallation} = URI::file->new(_get_tool_profdir($prog)->canonpath);
+  warn "Temporarily set UserInstallation=$ENV{UserInstallation}\n" if $debug;
   scope_guard {
     if (defined $saved_UserInstallation) {
       $ENV{UserInstallation} = $saved_UserInstallation;
@@ -850,13 +844,15 @@ sub _convert_using_openlibre($$$) {
     $opts->{suppress_stdout} = 1;
     #$opts->{suppress_stderr} = 1;
   }
+$opts->{suppress_stdout} = 1; ###TEMP unconditional
 
   my $cmdstatus = _runcmd($opts, @cmd);
 
   if ($cmdstatus != 0) {
     # This should never happen, see ERROR DETECTION above
     confess sprintf("($$) UNEXPECTED FAILURE, wstat=0x%04x\n",$cmdstatus),
-            "  converting '$opts->{inpath}' to $opts->{cvt_to}";
+            "  converting '$opts->{inpath}' to $opts->{cvt_to}\n",
+            "  Command was: ",join(" ",map{qsh} @cmd);
   }
 
   my @result_files = path($tdir)->children;
@@ -1331,7 +1327,7 @@ sub _determine_enc_tofrom($) {
       }
     };
     if ($@ eq "") {
-      warn "> Detected $opts->{input_sans_csv} as a seemingly-valid CSV\n"
+      warn "> Detected $opts->{inpath_sans_sheet} as a seemingly-valid CSV\n"
         if $debug;
       $opts->{cvt_from} = "csv";
     } else {
@@ -1365,7 +1361,7 @@ sub _tool_extract_all_csvs($$) {
   elsif (_ssconvert_supports_allsheets()) {
     _convert_using_ssconvert($opts, $opts->{inpath_sans_sheet}, $destdir);
   }
-  else { croak "Can't extract 'allsheets'.  Please install LibreOffice 7.2 or newer" }
+  else { confess "Can't extract 'allsheets'.  Please install LibreOffice 7.2 or newer" }
 }
 
 sub _tool_can_extract_csv_byname() {
@@ -1658,72 +1654,67 @@ Spreadsheet::Edit::IO - convert between spreadsheet and csv files
 
 =head1 SYNOPSIS
 
-  use Spreadsheet::Edit::IO
-        qw/convert_spreadsheet OpenAsCsv
-           cx2let let2cx @sane_CSV_read_options @sane_CSV_write_options/;
+ use Spreadsheet::Edit::IO qw/
+              convert_spreadsheet OpenAsCsv
+              cx2let let2cx 
+              @sane_CSV_read_options @sane_CSV_write_options/;
 
-  # Open a CSV file or result of converting a sheet from a spreadsheet
-  my $hash = OpenAsCsv("/path/to/spreadsheet.odt!Sheet1");  # single-arg form
-  my $hash = OpenAsCsv(inpath => "/path/to/spreadsheet.odt",
-                       sheetname -> "Sheet1");
+ # Open a CSV file or result of converting a sheet from a spreadsheet
+ my $hash = OpenAsCsv("/path/to/spreadsheet.odt!Sheet1");  # single-arg form
+ my $hash = OpenAsCsv(inpath => "/path/to/spreadsheet.odt",
+                      sheetname -> "Sheet1");
 
-  print "Reading ",$hash->{csvpath}," with encoding ",$hash->{encoding},"\n";
-  while (<$hash->{fh}>) { ... }
+ print "Reading ",$hash->{csvpath}," with encoding ",$hash->{encoding},"\n";
+ while (<$hash->{fh}>) { ... }
 
-  # Convert CSV to spreadsheet
-  $hash = convert_spreadsheet(inpath => "mycsv.csv", cvt_to => "xlsx");
-  print "Resulting spreadsheet path is $hash->{outpath}\n";
+ # Convert CSV to spreadsheet in temp file (deleted at process exit)
+ $hash = convert_spreadsheet(inpath => "mycsv.csv", cvt_to => "xlsx");
+ print "Output is $hash->{outpath}\n"; # e.g. "/tmp/dwYT6qf/mycsv.xlsx"
 
-  # Just convert a sheet from a spreadsheet to UTF-8 encoded CSV
-  # without opening it.
-  $hash = convert_spreadsheet(inpath => "mywork.xls", sheetname => "Sheet1",
-                              input_encoding => 'UTF-8',
-                              cvt_to => "csv");
-  print "The extracted csv file is $hash->{outpath}",
-        " which is encoded as $hash->{encoding}\n";
+ # Convert *all* sheets to CSV files in a temp directory
+ $hash = convert_spreadsheet(inpath => "mywork.xls", cvt_to => "csv",
+                             allsheets => 1);
+ opendir $dh, $hash->{outpath};
+ while (readrir($h)) { say "Output csv file is $_" }
 
-  ...
+ # Transcode a CSV from windows-1252 to UTF-8
+ convert_spreadsheet(
+     inpath  => "input.csv",  input_encoding   => 'windows-1252',
+     outpath => "output.csv", output_encodoutg => 'UTF-8',
+ );
 
-  # Convert *all* sheets in a spreadsheet to CSV files in a subdir
-  $hash = convert_spreadsheet(inpath => "mywork.xls", allsheets => 1,
-                              cvt_to => "csv");
-  system "ls -l ".$hash->{outpath};  # show resulting .csv files
+ # Translate between 0-based column index and letter code (A, B, etc.)
+ print cx2let(0);     # "A"
+ print let2cx("A");   # 0
+ print cx2let(26);    # "AA"
+ print let2cx("ABC"); # 730
 
-  # Transcode a windows-1252 encoded CSV to UTF-8
-  convert_spreadsheet(
-      inpath  => "input.csv",  input_encoding   => 'windows-1252',
-      outpath => "output.csv", output_encodoutg => 'UTF-8',
-  );
+ # Extract components from "filepath!SHEETNAME" specifiers
+ my $path      = filepath_from_spec("/path/to/spreasheet.xls!Sheet1")
+ my $sheetname = sheetname_from_spec("/path/to/spreasheet.xls!Sheet1")
 
-  # Translate between 0-based column index and letter code (A, B, etc.)
-  print "The first column is column ", cx2let(0), " (duh!)\n";
-  print "The 100th column is column ", cx2let(99), "\n";
-  print "Column BF is index ", let2cx("BF"), "\n";
+ # Parse a csv file with sane options
+ my $csv = Text::CSV->new({ @sane_CSV_read_options, eol => $hash->{eol} })
+   or die "ERROR: ".Text::CSV->error_diag ();
+ my @rows
+ while (my $F = $csv->getline( $infh )) {
+   push @rows, $F;
+ }
+ close $infh or die "Error reading ", $hash->csvpath(), ": $!";
 
-  # Extract components of "filepath!SHEETNAME" specifiers
-  my $path      = filepath_from_spec("/path/to/spreasheet.xls!Sheet1")
-  my $sheetname = sheetname_from_spec("/path/to/spreasheet.xls!Sheet1")
-
-  # Parse a csv file with sane options
-  my $csv = Text::CSV->new({ @sane_CSV_read_options, eol => $hash->{eol} })
-    or die "ERROR: ".Text::CSV->error_diag ();
-  my @rows
-  while (my $F = $csv->getline( $infh )) {
-    push @rows, $F;
-  }
-  close $infh or die "Error reading ", $hash->csvpath(), ": $!";
-
-  # Write a csv file with sane options
-  my $ocsv = Text::CSV->new({ @sane_CSV_write_options })
-    or die "ERROR: ".Text::CSV->error_diag ();
-  open my $outfh, ">:encoding(utf8)", $outpath
-    or die "$outpath: $!";
-  foreach (@rows) { $ocsv->print($outfh, $_) }
-  close $outfh or die "Error writing $outpath: $!";
+ # Write a csv file with sane options
+ my $ocsv = Text::CSV->new({ @sane_CSV_write_options })
+   or die "ERROR: ".Text::CSV->error_diag ();
+ open my $outfh, ">:encoding(utf8)", $outpath
+   or die "$outpath: $!";
+ foreach (@rows) { $ocsv->print($outfh, $_) }
+ close $outfh or die "Error writing $outpath: $!";
 
 =head1 DESCRIPTION
 
 Convert between CSV and spreadsheet files using external tools, plus some utility functions
+
+Currently this uses LibreOffice or OpenOffice (whatever is installed).  An external tool is not needed when only CSV files are involved.
 
 =head2 $hash = OpenAsCsv INPUT
 
@@ -1748,7 +1739,6 @@ RETURNS: A ref to a hash containing the following:
 
  {
   fh        => the resulting open file handle
-  encoding  => the encoding used for the .csv file
   csvpath   => the path {fh} refers to, which might be a temporary file
   sheetname => sheet name if the input was a spreadsheet
  }
@@ -1757,7 +1747,7 @@ RETURNS: A ref to a hash containing the following:
 
 =head2 convert_spreadsheet INPUT, cvt_to=>"csv", allsheets => 1, OPTIONS
 
-This converts between CSV and various spreadsheet.
+Convert CSV to spreadsheet or vice-versa, or transcode CSV to CSV.
 
 RETURNS: A ref to a hash containing:
 
@@ -1784,27 +1774,25 @@ input file itself is returned as C<outpath>.
 
 In all cases C<outpath> in the result hash points to the results.
 
-C<cvt_from> and C<cvt_to> need not be specified if they can be inferred
-from INPUT and C<outpath>.  They are the filename suffixes (sans dot)
-of the corresponding file types, e.g. "csv", "xls", "xlsx", "odt" etc.
+C<cvt_to> or C<cvt_from> are filename suffixes (sans dot) 
+e.g. "csv", "xlsx", etc., and need not be specified when indicated by 
+C<outpath> or INPUT parameters.
 
 OPTIONS may also include:
 
-=over 8
+=over 4
 
 =item sheetname => "sheet name"
 
 The workbook 'sheet' name used when reading or writing a spreadsheet.
-
 An input sheet name may also be specified as "!sheetname" appended to
 the INPUT path.
 
 =item allsheets => BOOL
 
-Valid only with C<< cvt_to =E<gt> 'csv' >>.
-All sheets in the input spreadsheet
+B<All> sheets in the input 
 are converted to separate .csv files named "SHEETNAME.csv" in
-the 'outpath' directory.
+the 'outpath' directory.  C<< cvt_to =E<gt> 'csv' >> is also requred.
 
 =item input_encoding => ENCODING
 
@@ -1812,13 +1800,12 @@ Specifies the encoding of INPUT if it is a csv file.
 
 ENCODING may be a comma-separated list of encoding
 names which will be tried in the order until one seems to work.
-If only one encoding is specified it will be used without trying it first.
+If only one is specified it will be used without trying it first.
 The default is "UTF-8,windows-1252".
 
 =item output_encoding => ENCODING
 
-Specifies the encoding to use when writing csv file(s).
-The default it 'UTF-8'.
+Used when writing csv file(s), defaults to 'UTF-8'.
 
 =item col_formats => [...]
 
@@ -1836,11 +1823,11 @@ Elements may also contain the numeric format codes defined by LibreOffice
 at L<https://wiki.documentfoundation.org/Documentation/DevGuide/Spreadsheet_Documents#Filter_Options_for_the_CSV_Filter>
 
 B<Automatic format detection:>
-Input CSV data is pre-scanned to auto-detect columns formats
+Input CSV data is pre-scanned to auto-detect column formats
 as much as possible.  This usually works well as long as dates are
 represented unambiguously, e.g. "2021-01-01" or "Jan 1, 2023".
 
-Currently auto-detection detects leading zeroes such as in U.S. Zip Codes,
+Specifically, this detects leading zeroes such as in U.S. Zip Codes,
 and MM/DD/YY or DD/MM/YY dates when a DD happens to be more than 12.
 
 =item verbose => BOOL
@@ -1855,7 +1842,7 @@ or *nix (LF) line endings properly, i.e. as a single \n:
 
    open my $fh, "<", $resulthash->{outpath};
    my $enc = $resulthash->{encoding};
-   binmode($fh, ":crlf:encoding($enc)");
+   binmode($fh, ":raw:encoding($enc):crlf");
 
 =head2 @sane_CSV_read_options
 
@@ -1889,6 +1876,11 @@ Not exported by default.
 
 Composes a combined string in a "preferred" format (currently "PATH!SHEETNAME").
 Not exported by default.
+
+=head1 SEE ALSO
+
+L<Spreadsheet::Edit> and L<Text::CSV>
+
 
 =cut
 

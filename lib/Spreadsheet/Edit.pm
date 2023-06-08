@@ -11,6 +11,7 @@ no warnings qw(experimental::lexical_subs);
 use feature qw(state lexical_subs current_sub);
 
 package Spreadsheet::Edit;
+$Spreadsheet::Edit::VERSION = 999.999; # over-ridden in released distribution
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion
 # DATE from Dist::Zilla::Plugin::OurDate
 
@@ -200,10 +201,10 @@ sub _generateHash_crow {  # %crow indexes cells in the current row during apply
 #
 ########################### End of Exporting stuff ##########################
 
-use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall/;
+use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall
+                              btw oops/;
 
-#use Data::Dumper::Interp 5.019;  # no $VERSION in dev sandbox; see dist.ini
-use Data::Dumper::Interp;
+use Data::Dumper::Interp 5.019;
 
 use Carp;
 our @CARP_NOT = qw(Spreadsheet::Edit
@@ -228,9 +229,6 @@ use Spreadsheet::Edit::IO qw(
    OpenAsCsv @sane_CSV_read_options @sane_CSV_write_options
    convert_spreadsheet
    sheetname_from_spec filepath_from_spec form_spec_with_sheetname);
-
-sub oops(@) { @_=("\n".__PACKAGE__." **oops**: @_\n"); goto &Carp::confess }
-sub btw(@) { local $_=join("",@_); s/\n\z//s; warn((caller(0))[2].": $_\n"); }
 
 use constant _CALLER_OVERRIDE_CHECK_OK =>
      (defined(&Carp::CALLER_OVERRIDE_CHECK_OK) 

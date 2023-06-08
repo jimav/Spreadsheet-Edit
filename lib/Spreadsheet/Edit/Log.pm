@@ -16,11 +16,14 @@ use Exporter 'import';
 our @EXPORT = qw/fmt_call log_call fmt_methcall log_methcall
                  nearest_call abbrev_call_fn_ln_subname/;
 
+our @EXPORT_OK = qw/btw oops/;
+
 use Scalar::Util qw/reftype refaddr blessed weaken/;
 use List::Util qw/first any all/;
 use File::Basename qw/dirname basename/;
 use Carp;
-sub oops(@) { @_=("\n".__PACKAGE__." oops:\n",@_,"\n"); goto &Carp::confess }
+sub oops(@) { @_=("\n".(caller)." oops:\n",@_,"\n"); goto &Carp::confess }
+sub btw(@) { local $_=join("",@_); s/\n\z//s; warn((caller(0))[2].": $_\n"); }
 use Data::Dumper::Interp qw/dvis vis visq avis hvis visnew addrvis u/;
 
 my %backup_defaults = (
@@ -221,11 +224,11 @@ __END__
 
 =head1 NAME
 
-Spreadsheet::Edit::Log - log method/function call, args, and return values
+Spreadsheet::Edit::Log - log method/function calls, args, and return values
 
 =head1 SYNOPSIS
 
-  use Spreadsheet::Edit::Log;
+  use Spreadsheet::Edit::Log qw/:DEFAULT btw oops/;
 
   sub public_method {
     my $self = shift;
@@ -233,8 +236,14 @@ Spreadsheet::Edit::Log - log method/function call, args, and return values
   }
   sub _internal_method {
     my $self = shift;
+
+    oops "zort not set!" unless defined $self->{zort};
+    btw "By the way, the zort is $self->{zort}" if $self->{debug};
+
     my @result = (42, $_[0]*1000);
+
     log_call \@_, [\"Here you go:", @result] if $self->{verbose};
+
     @result;
   }
   ...
@@ -247,7 +256,7 @@ Spreadsheet::Edit::Log - log method/function call, args, and return values
 be published as a stand-alone distribution rather than packaged in Spreadsheet-Edit.)
 
 This provides perhaps-overkill convenience for "verbose logging" and/or debug
-tracing of subroutein calls.
+tracing of subroutine calls.
 
 The resulting message string includes the location of the
 user's call, the name of the public function or method called, 
@@ -285,9 +294,9 @@ themselves (rather than hex escapes)
 
 =item 1. 
 
-If an item is a reference to a a string then the string is inserted as-is (unquoted),
+If an item is a reference to a string then the string is inserted as-is (unquoted),
 and unless the string is empty, adjacent commas are suppressed.
-This allows concatenating arbitrary text with values formatted with Data::Dumper.
+This allows concatenating arbitrary text with values formatted by Data::Dumper.
 
 =item 2. 
 
@@ -336,7 +345,9 @@ Your sub should return True if the frame represents the call to be described
 in the message.
 
 The default callback is S<<< C<sub{ $_[1][3] =~ /(?:::|^)[a-z][^:]*$/ }> >>>,
-which looks for any sub named with an initial [a-z].
+which looks for any sub named with an initial lower-case letter; this
+is based on the convention that internal subs start with an underscore
+or capital letter (such as for constants).
 
 =back
 
@@ -378,6 +389,34 @@ B<our %SpreadsheetEdit_Log_Options = (...);> in your package
 will be used to override the built-in defaults (but are still
 overridden by C<{OPTIONS}> passed in individual calls).
 
+=head1 Debug Utilities
+
+Z<>
+
+=head2 btw string,string,...
+
+For internal debug messages (not related to the other functions).
+
+Prints a message to STDERR preceeded by "linenum:" 
+giving the line number I<of the call to btw>.
+A newline is appended to the message unless the last string
+string already ends with a newline.
+
+This is like C<warn 'message'> when the message omits a final newline;
+but with a nicer presentation.  
+
+Not exported by default.
+
+=head2 oops string,string,...
+
+Prepends "\n<your package name> oops:\n" to the message and then
+chains to Carp::confess for backtrace and death.
+
+Not exported by default.
+
+=head1 SEE ALSO
+
+L<Data::Dumper::Interp>
 
 =head1 AUTHOR
 
