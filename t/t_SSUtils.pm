@@ -12,8 +12,8 @@ our @EXPORT = qw( fmtsheet
                 );
 
 use t_Common;
-use t_TestCommon qw/bug
-                    verif_eval_err insert_loc_in_evalstr
+use t_TestCommon ':no-Test2',
+                 qw/bug verif_eval_err insert_loc_in_evalstr
                     dprint dprintf/;
 use Spreadsheet::Edit qw/fmt_sheet cx2let let2cx sheet/;
 

@@ -1825,7 +1825,6 @@ sub title_rx(;$@) {
     $rx = shift;
     my $notie = shift() if u($_[0]) eq "_notie"; # during auto-detect probes
     croak "Extraneous argument(s) to title_rx: ".avis(@_) if @_;
-warn dvis '##WW $notie $rx $opthash' if $$self->{debug};
 
     if (defined $rx) {
       if ($rx eq 'auto') {
@@ -2538,6 +2537,7 @@ sub insert_row(;$) { goto &insert_rows; }
 #
 sub read_spreadsheet($;@) {
   my ($self, $opthash, $inpath) = &__self_opthash_1arg;
+  my $orig_opthash = { %$opthash };
 
   my $saved_stdopts = $self->_set_stdopts($opthash);
   scope_guard{ $self->_restore_stdopts($saved_stdopts) };
@@ -2645,7 +2645,7 @@ sub read_spreadsheet($;@) {
     $self->title_rx(\%autodetect_opts, $arg);
   } 
 
-  log_methcall $self, [$opthash, $inpath,
+  log_methcall $self, [$orig_opthash, $inpath,
                        \" [title_rx set to ",vis($$self->{title_rx}),\"]"]
       if $$self->{verbose};
 

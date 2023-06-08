@@ -1,4 +1,4 @@
-#; License: http://creativecommons.org/publicdomain/zero/1.0/
+# License: http://creativecommons.org/publicdomain/zero/1.0/
 # (CC0 or Public Domain).  To the extent possible under law, the author,
 # Jim Avera (email jim.avera at gmail dot com) has waived all copyright and
 # related or neighboring rights to this document.  Attribution is requested
@@ -16,7 +16,7 @@ package Spreadsheet::Edit::IO;
 use Exporter 'import';
 
 our @EXPORT = qw/convert_spreadsheet OpenAsCsv cx2let let2cx cxrx2sheetaddr
-                 sheetname_from_spec filepath_from_spec 
+                 sheetname_from_spec filepath_from_spec
                  form_spec_with_sheetname/;
 
 our @EXPORT_OK = qw/@sane_CSV_read_options @sane_CSV_write_options/;
@@ -37,7 +37,7 @@ use Path::Tiny qw/path/;
 use File::Spec::Functions qw/devnull tmpdir rootdir catdir catfile/;
 
 # Still sometimes convenient...
-use File::Basename qw(basename dirname);
+use File::Basename qw(basename);
 
 use File::Which qw/which/;
 use Guard qw(guard scope_guard);
@@ -45,11 +45,11 @@ use Fcntl qw(:flock :seek);
 use Scalar::Util qw/blessed/;
 use List::Util qw/none all notall first min max/;
 use Encode qw(encode decode);
-# DDI 5.015 is needed for 'qshlist'
-use Data::Dumper::Interp qw/vis visq dvis dvisq ivis ivisq avis qsh qshlist u/;
 use File::Glob qw/bsd_glob GLOB_NOCASE/;
 use Digest::MD5 qw/md5_base64/;
 use Text::CSV ();
+# DDI 5.025 is needed for Windows-aware qsh()
+use Data::Dumper::Interp qw/vis visq dvis dvisq ivis ivisq avis qsh qshlist u/;
 
 use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall/;
 our %SpreadsheetEdit_Log_Options = (
@@ -67,10 +67,10 @@ sub _get_username(;$) {
   return $answer->{$uid} //= do {
     # https://stackoverflow.com/questions/12081246/how-to-get-system-user-full-name-on-windows-in-perl
     eval { getpwuid($uid) // $uid }
-    || 
+    ||
     ($^O =~ /MSWin/ && $uid == (eval{$>}//-1) && eval{  # untested...
       require Win32API::Net;
-      Win32API::Net::UserGetInfo($ENV{LOGONSERVER}||'',Win32::LoginName(),10,my $info={}); 
+      Win32API::Net::UserGetInfo($ENV{LOGONSERVER}||'',Win32::LoginName(),10,my $info={});
       $info->{fullName}
     })
     ||
@@ -88,14 +88,16 @@ sub _get_username(;$) {
 # Sharing is okay because we get an exclusive lock before actually using it.
 state $profile_parent_dir = do{ # also used for lockfile
   my $user = _get_username();
-  (my $dname = __PACKAGE__."_${user}_profileparent") =~ s/::/-/g;
+  my $dname = __PACKAGE__."_${user}_profileparent";
+  $dname =~ s/::/-/g;
+  $dname =~ s/[^-\w.:]/_/g;
   (my $path = path(File::Spec->tmpdir)->child($dname))->mkpath;
   $path # Path::Tiny
 };
-sub _get_tool_profile_dir($$) {
-  my ($opts, $tool_path) = @_;
+sub _get_tool_profile_dir($) {
+  my ($tool_path) = @_;
   my $fingerprint = _file_fingerprint($tool_path);
-  my $toolname = path($tool_path)->basename(qw/\.(exe|cmd|bat)$/);
+  (my $toolname = path($tool_path)->basename(qw/\.\w+$/)) =~ s/[^-\w.:]/_/g;
   my $path = $profile_parent_dir->child("${toolname}_$fingerprint");
   $path->mkpath;
   $path
@@ -103,34 +105,66 @@ sub _get_tool_profile_dir($$) {
 
 # Prevent concurrent document conversions.
 # LO & OO can't handle concurrent access to the same profile.
+my $locked_fh;
 sub _get_exclusive_lock($) { # returns lock object
   my $opts = shift;
-  my $lockfile_path = $profile_parent_dir->child("LOCKFILE");
-  open my $lock_fh, "+>>", $lockfile_path or die $!;
-  eval { chmod 0666, $lock_fh; }; # sometimes not implemented 
-  $opts->{lockfile_fh} = $lock_fh;
-  while (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
-    seek($lock_fh, 0, SEEK_SET) or die;
-    my $owner = (<$lock_fh>)[-1] // "";  # pid NNN (progname)
-    { my ($pid) = ($owner =~ /pid (\d+)/) or last;
-      my @s = stat("/proc/$pid") or last;
-      $owner = _get_username( $s[4] );
+  my $lockfile_path = $profile_parent_dir->child("LOCKFILE")->canonpath;
+  my $sleeptime = 1;
+  my $lock_fh;
+  while (! defined $lock_fh) {
+    #warn "$$ : ### AAA open $lockfile_path ...\n";
+    open $lock_fh, "+>>", $lockfile_path or die $!;
+    #warn "$$ : ### AA2 open succeeded.\n";
+    eval { chmod 0666, $lock_fh; }; # sometimes not implemented
+    #warn "$$ : ### AA3 flock ...\n";
+    if (! flock($lock_fh, LOCK_EX|LOCK_NB)) {
+      #warn "$$ : ### AA4 flock FAILED\n";
+      seek($lock_fh, 0, SEEK_SET) or die;
+      my @lines = <$lock_fh>;
+      close($lock_fh) or die "close:$!"; $lock_fh = undef;
+      #warn "$$ : ### AA6 fh closed...\n";
+      my $owner = $lines[-1] // "";  # pid NNN (progname)
+      { my ($pid) = ($owner =~ /pid (\d+)/) or last;
+        my @s = stat("/proc/$pid") or last;
+        $owner = _get_username($s[4])." ".$owner;
+      }
+      my $ownermsg = $owner ? " held by $owner" : "";
+      warn ">> ($$) Waiting for exclusive lock${ownermsg}...\n",
+           "   $lockfile_path\n"
+        unless $opts->{silent};
+      sleep $sleeptime;
+    } else {
+      $locked_fh = $lock_fh;
+      seek($lock_fh, 0, SEEK_END) or die;
+      print $lock_fh "pid $$ ($progname)\n"; # always appends anyway on *nix
     }
-    my $ownermsg = $owner ? " held by $owner" : "";
-    warn ">> ($$) Waiting for exclusive lock${ownermsg}...\n"
-      unless $opts->{silent};
-    unless ($owner) { sleep 1; redo }
-    flock($lock_fh, LOCK_EX) or die "flock: $!";
-    last;
   }
-  print $lock_fh "pid $$ ($progname)\n"; # always appends
+  $opts->{lockfile_fh} = $lock_fh;
+  #warn "$$ : ### GOT LOCK\n";
+}
+END{
+  if (defined $locked_fh) {
+    flock($locked_fh, LOCK_UN);
+    close($locked_fh);
+    $locked_fh = undef;
+    warn "Did emergency unlock!\n";
+  }
+  #else { warn "(emergency unlock not needed)\n"; }
 }
 sub _release_lock($) {
   my $opts = shift;
   my $fh = delete($opts->{lockfile_fh}) // oops;
+oops unless $fh == $locked_fh;
+#seek($fh, 0, SEEK_SET) or die;
+#my @x = (<$fh>);
+#seek($fh, 0, SEEK_SET) or die;
+#warn dvis "$$ : Lockfile contains: @x\n";
+##warn "$$ : ###BBB stalling before unlock...\n"; sleep 3;
   truncate($fh,0);
   flock($fh, LOCK_UN) or die "flock UN: $!";
   close $fh;
+  $locked_fh = undef;
+#warn "$$ : ###BB0 unlocked and closed.\n";
 }
 
 # Libre Office text converter "charset" numbers
@@ -231,8 +265,10 @@ my %LO_charsets = (
   'UCS4' => 65534,
   'UCS2' => 65535,
 );
+
 =for Pod::Coverage _name2LOcharsetnum
 =cut
+
 sub _name2LOcharsetnum($) {
   my ($enc) = @_;
   local $_ = uc $enc;
@@ -321,15 +357,19 @@ sub _openlibre_path() {
   return $OLpath_answer if $OLpath_answer;
   unless ($ENV{SPREADSHEET_EDIT_IGNPATH}) {
     foreach my $short_name (qw(libreoffice loffice localc)) {
-      if ($OLpath_answer = which($short_name)) { return $OLpath_answer }
+      if ($OLpath_answer = which($short_name)) {
+        return( ($OLpath_answer=path($OLpath_answer)->canonpath) );
+      }
     }
   }
-  # Search for local/isolated LibreOffice (or OO) installations, which are
-  # the result of unpacking from a .deb or other archive into a non-standard 
-  # location.  The resulting structure is
-  #    <somedir>/opt/{libreoffice,openoffice}*/program/soffice
-  # where <somedir> may be a full version number, and the * may be a major
-  # version number (e.g. "libreoffice7.5", "openoffice4").
+  # Search for an installation.  On Windows it will usually be
+  #   C:\Program Files\LibreOffice\...
+  # On *nix, a local/isolated install (i.e. the result of extracting files
+  # from a .deb or other archive) will be
+  #   somwehere/opt/libreofficeA.B/...
+  # and "..." is the same standard hierarchy on all platforms.
+  #
+  # If multiple are found try to pick the "latest".
   my sub _cmp_subpaths($$) {
     my ($sp1, $sp2) = @_;
     oops     if !defined($sp1);
@@ -339,76 +379,125 @@ sub _openlibre_path() {
     my (@v2) = sort { length($a) <=> length($b) } ($sp2 =~ /(\d[.\d]*)/g);
     version->parse($v1[-1]//0) <=> version->parse($v2[-1]//0)
   }
-  # I tried just doing File::Glob::bsd_glob('/*/*/*/opt/libre*/program') but 
+
+  # I tried just doing File::Glob::bsd_glob('/*/*/*/opt/libre*/program') but
   # it silently failed even though the same glob works from the shell. Mmff...
+  no warnings FATAL => 'all';
+  state $windows = ($^O eq "MSWin32");
+  my (@search_dirs, $searchfor_re, $maxdepth);
+  if ($windows) {
+    @search_dirs = ("C:\\Program Files","C:\\Program Files (x86)");
+    $searchfor_re = qr/^Program Files/;
+    $maxdepth = 1;
+    # depth: C:\Program Files\libreofficeXXX/program/
+    #              1
+  } else {
+    @search_dirs = (File::Spec->rootdir());
+    push @search_dirs, $ENV{HOME} if $ENV{HOME};
+    $maxdepth = 4;
+    $searchfor_re = qr/^opt$/;
+    # depth: /*/*/<unpackparent>/opt/libreofficeXXX/program/
+    #         1 2    3            4
+  }
   my %results;
   $ENV{SPREADSHEET_EDIT_NOLOSEARCH} or
   File::Find::find(
     { wanted => sub{
-        # Undef fullname OR invalid "_" filehandle implies a broken symlink, 
+        # Undef fullname OR invalid "_" filehandle implies a broken symlink,
         #   see https://github.com/Perl/perl5/issues/21122
-        # Zero size implies /proc or something similar; do not enter.
-        # File::Find::fullname unreadable implies followed link to inaccessable 
+        # Zero size on *nix implies /proc or something similar; do not enter.
+        # File::Find::fullname unreadable implies followed link to inaccessable
         # (The initial "_" stat may be invalid, so "-l _" is useless)
         $! = 0;
+        # https://github.com/Perl/perl5/issues/21143
+        my $fullname = $File::Find::fullname;
+        if ($windows) {
+            stat($_); # lstat will not have been done
+            $fullname //= $File::Find::name;
+        }
         if (
-            !defined($File::Find::fullname) # broken link, per docs
+            !defined($fullname) # broken link, per docs
             || (! -r _) || (! -x _) # unreadable item or invalid "_" handle
                                  # https://github.com/Perl/perl5/issues/21122
-            || (stat(_))[7] == 0 # zero size ==> /proc or similar
-            || ! -r $File::Find::fullname # presumably a symlink to unreadable
+            || (!$windows && (stat(_))[7] == 0) # zero size ==> /proc or similar
+            || /\$/ # $some_windows_special_thing$
+            || ! -r $fullname # presumably a symlink to unreadable
             || ! -x _                     # or unsearchable dir
            ) {
           $File::Find::prune = 1;
-          return 
+          return
         }
         return unless -d _;
         # Maximum depth: /*/*/<unpackparent>/opt/libreofficeXXX/program/
-        my $depth = scalar(() = m#(/)#g);
-        if (basename($_) eq "opt") {
+        my $path = path($_);
+        my $depth = scalar(() = $path->stringify =~ m#(/)#g);
+        if (basename($_) =~ $searchfor_re) { # ^opt$ or ^Program Files
           my $prefix = path($_)->parent;
           for my $o_l (qw/libre open/) {
+            my $pattern
+                 = path($_)->child("${o_l}*/program/soffice*")->canonpath;
             # eval because I'm suspicious of the glob on Windows
-            my $pattern = catfile($_,"${o_l}*","program","soffice");
             my @hits; eval{ @hits = sort +bsd_glob($pattern, GLOB_NOCASE) };
             if (@hits) {
-              my $path = path($hits[-1]);
-              $prefix->subsumes($path) or oops dvis '$prefix $path';
-              my $subpath = $path->relative($prefix);
-              if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
-                @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
+              # On windows, use soffice.com not .exe because it writes messages
+              # to stdout not a window.  See https://help.libreoffice.org/7.5/en-GB/text/shared/guide/start_parameters.html?&DbPAR=SHARED&System=WIN
+              my $path = path( (first{ /soffice$/     } @hits) ||
+                               (first{ /soffice\.com/ } @hits) );
+              if ($path) {
+                $prefix->subsumes($path) or oops dvis '$prefix $path';
+                my $subpath = $path->relative($prefix);
+                if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
+                  @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
+                }
               }
             }
             else { btw dvis '##glob failed: $pattern\n$@' if $@; }
           }
         }
-        elsif ($depth == 4) {
-          $File::Find::prune = 1; 
+        if ($depth == $maxdepth) {
+          $File::Find::prune = 1;
           return;
         }
-        elsif ($depth > 4) { oops dvis '$depth $_' }
-      }, 
+        elsif ($depth > $maxdepth) { oops dvis '$depth $maxdepth $_' }
+      },
       follow_fast => 1,
       follow_skip => 2,
       dangling_symlinks => 0,
       no_chdir => 1
     },
-    File::Spec->rootdir(), (defined($ENV{HOME}) ? $ENV{HOME} : ())
+    @search_dirs
   );
   $OLpath_answer = path(
-     $results{libre}{path} // $results{open}{path} 
+     $results{libre}{path} // $results{open}{path}
        // (!$ENV{SPREADSHEET_EDIT_IGNPATH} && which("soffice")) # installed OO?
        // croak "Can not find LibreOffice or OpenOffice"
-     )->realpath->stringify
+     )->realpath->canonpath
 }#_openlibre_path
 
 sub _openlibre_features() {
   state $hash;
   return $hash if defined $hash;
   my $prog = _openlibre_path() // return(($hash={ available => 0 }));
-  my ($s) = (qx/$prog --version 2>&1/ =~ /Libre.*? (\d+\.\d+\.\w+)/);
-  confess "$prog --version DID NOT WORK" unless $s;
-  my $version = version->parse("v".($s//"0.1"));
+  my $version;
+  # This is gross but fast and works in recent versions of LO
+  if (my $fh = eval{ path($prog)->realpath->parent->child("types/offapi.rdb")
+                          ->filehandle("<",":raw")} ) {
+    my $octets; sysread $fh, $octets, 100;
+    if ($octets =~ /Created by LibreOffice (\d+\.\d+\.\w+)/) {
+      $version = version->parse("v$1");
+    }
+  }
+  unless ($version) {
+    if (qx/$prog --version 2>&1/ =~ /Libre.*? (\d+\.\d+\.\w+)/) {
+      $version = version->parse("v$1");
+    } else {
+      warn "$prog --version DID NOT WORK\n";
+    }
+  }
+  unless ($version) {
+    warn "WARNING: Could not determine version of $prog\n";
+    $version = version->parse("v99.99");
+  }
   $hash = {
     available => 1,
     # LibreOffice 7.2 allows extracting all sheets at once
@@ -418,39 +507,64 @@ sub _openlibre_features() {
     named_sheet => 0,
     # Supported output formats are too many to list
     ousuf_any => 1,
+    # UserInstallation can not be over-ridden on Windows (as of 7.5.3.2)
+    # See https://bugs.documentfoundation.org/show_bug.cgi?id=155724
+    UserInstallation_ok => ($^O ne "MSWin32"),
   }
 }
+
 sub _openlibre_supports_allsheets() { _openlibre_features->{allsheets} }
 sub _openlibre_supports_named_sheet() { _openlibre_features->{named_sheet} }
 sub _openlibre_supports_writing($) { _openlibre_features->{available} }
+sub _openlibre_UserInstallation_ok() { _openlibre_features->{UserInstallation_ok} }
 
 sub _ssconvert_features() { return { availble => 0 } } # TODO add back?
 sub _ssconvert_supports_allsheets() { _ssconvert_features()->{allsheets} }
 sub _ssconvert_supports_named_sheet() { _ssconvert_features()->{named_sheet} }
 sub _ssconvert_supports_writing($) { _ssconvert_features->{available} }
 
+# This allows users (e.g. App-diff_spreadsheets tests) to determine
+# if external tool(s) are available to convert to/from spreadsheets
+# (CSVs are supported directly so can always be used)
+sub spreadsheets_ok() {
+  _openlibre_features->{available} || _ssconvert_features->{availble}
+}
+
+=for Pod::Coverage spreadsheets_ok
+=cut
+
 sub _runcmd($@) {
   my ($opts, @cmd) = @_;
   my $guard = _signals_guard;
-  warn "> ",join(" ", map{qsh} @cmd),"\n" if $opts->{verbose};
-  my $pid = fork;
-  if ($pid == 0) { # CHILD
-    if ($opts->{suppress_stderr}) {
-      open(STDERR, ">", devnull()) or croak $!;
-    }
-    if ($opts->{stdout_to_stderr}) {
-      open(STDOUT, ">&STDERR") or croak $!;
-    }
-    elsif ($opts->{suppress_stdout}) {
-      open(STDOUT, ">", devnull()) or croak $!;
-    }
-    exec(@cmd) or print "### exec failed: $!\n";
-    die;
+  # This used to fork & exec but that blows up on MSWin32 because the child
+  # pseudo-process executes all END{} blocks everywhere after "exec"
+  my $redirs = "";
+  if ($opts->{suppress_stderr}) {
+    $redirs .= " 2>".devnull();
   }
-  waitpid($pid,0);
-  my $r = $?;
-  warn "(wait status=$r)\n" if $opts->{verbose};
-  return $r;
+  if ($opts->{stdout_to_stderr}) {
+    confess "Not portable";
+    $redirs .= " 1>&2";
+  }
+  if ($opts->{stderr_to_stdout}) {
+    confess "Not portable";
+    $redirs .= " 2>&1";
+  }
+  if ($opts->{suppress_stdout}) {
+    $redirs .= " >".devnull();
+  }
+  my $cmdstr = join(" ", map{qsh} @cmd) . $redirs;
+  if ($redirs) {
+    foreach (@cmd) {
+      confess "Can not portably pass argument '$_'" if /["']/;
+    }
+    warn "> $cmdstr\n" if $opts->{verbose};
+    system $cmdstr;
+  } else {
+    warn "> $cmdstr\n" if $opts->{verbose};
+    system @cmd;
+  }
+  return $?
 }
 
 sub _fmt_outpath_contents($) {
@@ -474,8 +588,8 @@ sub _create_tempdir_if_needed($) {
   #                <ifbase>_<sig>.xlsx etc. # single file returned to user
   #                <ifbase>_<sig>/*.csv     # directory returned to user
   #                <ifbase>_<sig>_csvcache/*.csv
-  # 
-  # <ifbase> is derived from the intput file name, and <sig> is a fingerprint 
+  #
+  # <ifbase> is derived from the intput file name, and <sig> is a fingerprint
   # based on input file's dev, inode, and modification timestamp.
   #
   $tempdir //= do{
@@ -492,8 +606,8 @@ END{ $tempdir->remove_tree if $tempdir; }
 
 # Compose a unique path under $tempdir.
 # This is *not* a "tempfile" or "tempdir" object which auto-destructs,
-# in fact it does not even exist yet and we don't know here which it will be.  
-# Either the user must remove it when they are done with it, or it will 
+# in fact it does not even exist yet and we don't know here which it will be.
+# Either the user must remove it when they are done with it, or it will
 # be removed when $tempdir is removed at process exit.
 #
 sub _path_under_tempdir($@) {
@@ -542,7 +656,14 @@ sub _convert_using_openlibre($$$) {
   my $prog = _openlibre_path() // oops;
 
   my $saved_UserInstallation = $ENV{UserInstallation};
-  $ENV{UserInstallation} = "file://"._get_tool_profile_dir($opts, $prog);
+  if (_openlibre_UserInstallation_ok()) {
+    $ENV{UserInstallation} = "file://"._get_tool_profile_dir($prog)->canonpath;
+    warn "Temporarily setting UserInstallation=$ENV{UserInstallation}\n" if $debug;
+  } else {
+    # As of LO 6.5.3.2 UserInstallation may not be over-ridden on Windows.
+    # https://bugs.documentfoundation.org/show_bug.cgi?id=155724
+    warn "Can not use separate profile on windows (yet?)\n" if $debug;
+  }
   scope_guard {
     if (defined $saved_UserInstallation) {
       $ENV{UserInstallation} = $saved_UserInstallation;
@@ -552,7 +673,7 @@ sub _convert_using_openlibre($$$) {
   };
 
   # The --convert-to argument is "suffix:filtername:filteropts"
-  
+
   # I think (not certain) that we can only specify the encoding of CSV files,
   # either as input or output;  .xlsx and .ods spreadsheets (which are based
   # on XML) could in principle use any encoding internally, but I'm not sure
@@ -562,7 +683,7 @@ sub _convert_using_openlibre($$$) {
   # https://help.libreoffice.org/7.5/en-US/text/shared/guide/start_parameters.html?&DbPAR=SHARED&System=UNIX
   # http://wiki.openoffice.org/wiki/Documentation/DevGuide/Spreadsheets/Filter_Options
   # https://wiki.documentfoundation.org/Documentation/DevGuide/Spreadsheet_Documents#Filter_Options_for_the_CSV_Filter
-  
+
   # I think we never want to specify the filter unless we have parameters
   # for it.  Currently that is only for csv.
   # If no filter is specified, the suffix (e.g. 'ods') should be enough
@@ -571,7 +692,7 @@ sub _convert_using_openlibre($$$) {
     txt  => "Text - txt - csv (StarCalc)",
     #xls  => "MS Excel 97",
     #xlsx => "Calc MS Excel 2007 XML",
-    #ods  => "calc8", 
+    #ods  => "calc8",
   };
 
   my $ifilter = $opts->{soffice_infilter} //= do{
@@ -615,7 +736,7 @@ sub _convert_using_openlibre($$$) {
       # Token 6: MS-LCID Language Id; 0 or omitted means UI language
       . ","  # default: false
       # Token 7: On input: true => Quoted cells are always read a 'text',
-      #  effectively disabling Token 8.  This must be false to recognize dates 
+      #  effectively disabling Token 8.  This must be false to recognize dates
       #   like "Jan 1, 2000" which by necessity must be quoted for the comma,
       #   but will **CORRUPT** zip codes with leading zeroes unless
       #   col_formats overrides (which it does now by default).
@@ -687,7 +808,7 @@ sub _convert_using_openlibre($$$) {
       #   0 or absent => the "first" sheet
       #   1-N => the Nth sheet (arrgh, can not specify name!!)
       #   -1 => export all sheets to files named filebasenamne.Sheetname.csv
-      .",".($opts->{allsheets} ? -1 : 
+      .",".($opts->{allsheets} ? -1 :
             $opts->{sheetname} ? die("add named-sheet support here") :
             0)
       # Token 13: Not used for export
@@ -701,38 +822,43 @@ sub _convert_using_openlibre($$$) {
   };
 
   # We can only control the output directory path, not the name of
-  # an individual result file.  If $dst is a directory then the result 
-  # could theoretically output into it directly, but instead we always 
+  # an individual result file.  If $dst is a directory then the result
+  # could theoretically output into it directly, but instead we always
   # output to an ephemeral temp directory and then move the results to $dst
   #
   # With 'allsheets' the resulting files must be renamed to conform to our
   # external API (namely SHEETNAME.csv).
   #
-  # ERROR DETECTION: As of LO 7.5 we always get zero exist status and the 
+  # ERROR DETECTION: As of LO 7.5 we always get zero exist status and the
   # only way to detect errors is to notice that no files were written.
   # https://bugs.documentfoundation.org/show_bug.cgi?id=155415
   #
   my $tdir = Path::Tiny->tempdir(path($dst)->basename."_XXXXX");
   # will be deleted when $dirpath goes out of scope
-  
-  my @cmd = ($prog, "--headless", "--invisible",
-                    "--nolockcheck", "--norestore",
-                    $ifilter ? ("--infilter=$ifilter") : (),
-                    "--convert-to", 
-                      $opts->{cvt_to}.($ofilter ? ":$ofilter" : ""),
-                    "--outdir", $tdir,
-                    $src);
 
-  $opts->{stdout_to_stderr} = 1;       # send "convert..." message to stderr
-  $opts->{suppress_stderr} = !$debug;  # and suppress it unless tracing
+  my @cmd = ($prog,
+                    "--headless", "--invisible",
+                    "--nolockcheck", "--norestore",
+                    "--view", # open read-only in case can't create lockfile
+                    $ifilter ? ("--infilter=$ifilter") : (),
+                    "--convert-to",
+                      $opts->{cvt_to}.($ofilter ? ":$ofilter" : ""),
+                    "--outdir", $tdir->canonpath,
+                    path($src)->canonpath);
+
+  unless ($debug) {
+    $opts->{suppress_stdout} = 1;
+    #$opts->{suppress_stderr} = 1;
+  }
 
   my $cmdstatus = _runcmd($opts, @cmd);
 
   if ($cmdstatus != 0) {
     # This should never happen, see ERROR DETECTION above
-    croak "($$) Conversion of '$opts->{inpath}' to $opts->{cvt_to} failed\n";
+    confess sprintf("($$) UNEXPECTED FAILURE, wstat=0x%04x\n",$cmdstatus),
+            "  converting '$opts->{inpath}' to $opts->{cvt_to}";
   }
-  
+
   my @result_files = path($tdir)->children;
   btw dvis '>> @result_files' if $debug;
   if (@result_files == 0) {
@@ -744,12 +870,13 @@ sub _convert_using_openlibre($$$) {
   if ($opts->{allsheets}) {
     # Rename files to match our API (omit the spreadsheetbasename- prefix)
     foreach (@result_files) {
-      my $dir  = $_->dirname;
+      my $dir  = $_->parent;  # Like dirname but including Volume:
       my $base = $_->basename;
       (my $newbase = $base) =~ s/^$opts->{ifbase}-// or oops;
-      my $newpath = path($dir)->child($newbase);
-      btw ">> Renaming $_ -> $newpath\n" if $debug;
-      rename ($_, $newpath) or oops "$!";
+      my $newpath = $dir->child($newbase)->canonpath;
+      my $oldpath = path($_)->canonpath;
+      btw ">> Renaming $oldpath -> $newbase\n" if $debug;
+      rename ($oldpath, $newpath) or oops "$!";
       $_ = $newpath; # update @result_files
     }
   }
@@ -758,9 +885,9 @@ sub _convert_using_openlibre($$$) {
   if (-e $dst) {
     croak "$dst must be a directory if it pre-exists\n" unless -d $dst;
     btw ">> Moving results -> $dst\n" if $debug;
-    foreach (@result_files) { 
+    foreach (@result_files) {
       btw ">>> move $_ -> $dst" if $debug;
-      File::Copy::move($_, $dst) 
+      File::Copy::move($_, $dst)
     }
     btw ">> Now $dst contains: ",avis($dst->children) if $debug;
   } else {
@@ -928,7 +1055,7 @@ our $default_output_encoding = "UTF-8";
 # Return digested %opts setting
 #   sheetname, inpath_sans_sheet (as Path::Tiny), encoding or default
 sub _process_args($;@) {
-  confess "fix obsolete call to pass linearized options" 
+  confess "fix obsolete call to pass linearized options"
     if ref($_[0]) eq "HASH";
   my $leading_inpath = ( scalar(@_) % 2 == 1 ? shift(@_) : undef );
   my %opts = (
@@ -986,7 +1113,7 @@ sub _process_args($;@) {
 }#_process_args
 
 # Extract the of encoding(s) specified in an iolayers string
-# Parse iolayers string, returning ($prefix,[encodings],$suffix) 
+# Parse iolayers string, returning ($prefix,[encodings],$suffix)
 # For example from ":raw:encodings(utf8,windows-1252):zz" the output
 # would be (":raw", [:utf8","windows-1252"], ":zz")
 sub _parse_iolayers($) {
@@ -1001,7 +1128,7 @@ sub _parse_iolayers($) {
 }
 
 # Detect cvt_from and cvt_to from filenames, or peeking at the data.
-# If input is CSV, detect encoding, separator and quote characters; 
+# If input is CSV, detect encoding, separator and quote characters;
 #   add quotes to values with leading zeroes (e.g. Zip codes) which would
 #   otherwise be corrupted by being read as numbers instead of text strings.
 #   The modified data is written to a temp file
@@ -1018,8 +1145,8 @@ sub _determine_enc_tofrom($) {
     # If user did not specify, the default is a list to try.
     $opts->{input_encoding} //= $default_input_encodings;
     my @enclist = split m#,#, $opts->{input_encoding};
-    return 
-      if @enclist == 1; 
+    return
+      if @enclist == 1;
     $$r2octets //= $opts->{inpath_sans_sheet}->slurp_raw;
     for my $enc (@enclist) {
       eval { decode($enc, $$r2octets, Encode::FB_CROAK|Encode::LEAVE_SRC) };
@@ -1031,8 +1158,8 @@ sub _determine_enc_tofrom($) {
       @enclist = ($enc);
       last
     }
-    #croak "Could not detect encoding of $opts->{inpath_sans_sheet}\n" 
-    confess "Could not detect encoding of $opts->{inpath_sans_sheet}\n" 
+    #croak "Could not detect encoding of $opts->{inpath_sans_sheet}\n"
+    confess "Could not detect encoding of $opts->{inpath_sans_sheet}\n"
       if @enclist > 1;
     $opts->{input_encoding} = $enclist[0];
   } #determine_input_encoding
@@ -1062,38 +1189,38 @@ sub _determine_enc_tofrom($) {
     my $r2octets = shift;
     oops unless $opts->{input_encoding};
     my $fh;
-    my $pathish = defined($$r2octets) 
+    my $pathish = defined($$r2octets)
                     ? \$$r2octets : $opts->{inpath_sans_sheet};
-    open($fh, "<:encoding($opts->{input_encoding})", $pathish) 
+    open($fh, "<:encoding($opts->{input_encoding})", $pathish)
       or die "$pathish : $!";
     $fh
   }
 
   my sub determine_csv_q_sep($$) {
     my ($r2octets, $r2rows) = @_;
-    return 
+    return
       if defined($opts->{quote_char}) && defined($opts->{sep_char});
 
     my $fh = open_input($r2octets);
-    
+
 #    my $chars;
 #    if (defined($$r2octets)
 #      $chars = decode($opts->{input_encoding},$$r2octets,Encode::FB_CROAK);
 #    }
-    
+
     # Try combinations starting with the most-common '"' and ',' while
     # parsing the file for unsafe unquoted values (throws on syntax error).
     # The expectation is that the first try usually succeeds
-    Q: 
-    for my $q (defined($opts->{quote_char}) 
+    Q:
+    for my $q (defined($opts->{quote_char})
                  ? ($opts->{quote_char}) : ("\"", "'")) {
       my $found_q;
-      SEP: 
-      for my $sep (defined($opts->{sep_char}) 
+      SEP:
+      for my $sep (defined($opts->{sep_char})
                      ? ($opts->{sep_char}) : (",","\t")) {
         btw dvis '--- TRYING $q $sep ---' if $debug;
 #        # Preliminary check for an illegal use of the quote char
-#        if (defined($chars) 
+#        if (defined($chars)
 #            && $chars =~ /[^${q}${sep}\x{0D}\x{0A}]
 #                          ${q}
 #                          (?=[^${q}${sep}\x{0D}\x{0A}] | \z)/gx) {
@@ -1119,7 +1246,7 @@ sub _determine_enc_tofrom($) {
 
   my sub determine_csv_col_formats($$) {
     my ($r2octets, $r2rows) = @_;
-    return 
+    return
       if defined $opts->{col_formats};
     $$r2rows //= do{
       my $fh = open_input($r2octets);
@@ -1132,7 +1259,7 @@ sub _determine_enc_tofrom($) {
         for ($row->[$i]) {
           # recognize obvious Y/M/D or M/D/Y or D/M/Y date forms
           if (m#\b(?<y>(?:[12]\d)?\d\d)/(?<m>\d\d)/(?<d>\d\d)\b#) {
-            if ($+{d} > 12 && $+{d} <= 31 && $+{m} >= 1 && $+{m} <= 12 
+            if ($+{d} > 12 && $+{d} <= 31 && $+{m} >= 1 && $+{m} <= 12
                  && ($+{y} < 100 || $+{y} >= 1000)) {
               $col_formats[$i] = "YY/MM/DD";
               btw "Recognized '$_' as $col_formats[$i] format" if $debug;
@@ -1182,7 +1309,7 @@ sub _determine_enc_tofrom($) {
   unless ($opts->{cvt_from}) {
     if ($opts->{inpath_sans_sheet} =~ /\.([^.]+)$/) {
       $opts->{cvt_from} = $1;
-    } 
+    }
   }
   $opts->{cvt_from} =~ s/^\.txt$/.csv/i if $opts->{cvt_from};
 
@@ -1241,15 +1368,15 @@ sub _tool_extract_all_csvs($$) {
   else { croak "Can't extract 'allsheets'.  Please install LibreOffice 7.2 or newer" }
 }
 
-sub _tool_can_extract_csv_byname() { 
-  _openlibre_supports_named_sheet() || _ssconvert_supports_named_sheet() 
+sub _tool_can_extract_csv_byname() {
+  _openlibre_supports_named_sheet() || _ssconvert_supports_named_sheet()
 }
 sub _tool_extract_one_csv($$) {
   my ($opts, $destpath) = @_;
 
   ## FIXME: This is not quite right--_tool_write_spreadsheet()
   ##  contains almost the same code.  Should be a better factoring...
-  
+
   _get_exclusive_lock($opts);
   scope_guard { _release_lock($opts); };
 
@@ -1304,7 +1431,7 @@ sub _extract_one_csv($) {
   my sub _fill_csv_cache() {
     $cachedirpath->remove_tree;
     $cachedirpath->mkpath;
-    { local $opts->{verbose} = 0;
+    { #local $opts->{verbose} = 0;
       #local $opts->{debug} = 0;
       _tool_extract_all_csvs($opts, $cachedirpath);
     }
@@ -1370,8 +1497,8 @@ sub _final_outpath($) {
     return path($opts->{outpath});
   } else {
     my $suf = $opts->{cvt_to} unless $opts->{allsheets};
-    return( 
-      ($opts->{outpath}=_path_under_tempdir($opts, suf=>$suf)) 
+    return(
+      ($opts->{outpath}=_path_under_tempdir($opts, suf=>$suf))
     );
   }
 }
@@ -1386,7 +1513,7 @@ sub convert_spreadsheet(@) {
 
   # intuit cvt_from & cvt_to, detect encoding, and pre-process .csv input
   # if needed to avoid corruption of leading zeroes.
-  _determine_enc_tofrom(\%opts); 
+  _determine_enc_tofrom(\%opts);
 
   my $input_enc = $opts{input_encoding};
   my $output_enc = $opts{output_encoding};
@@ -1407,7 +1534,7 @@ sub convert_spreadsheet(@) {
     if (!$opts{allsheets}) {
       if ($input_enc ne $output_enc) {
         # Special case #1: in & out are CSVs but different encodings.
-        warn "> Transcoding csv:  $input_enc -> $output_enc\n" 
+        warn "> Transcoding csv:  $input_enc -> $output_enc\n"
           if $opts{debug};
         my $octets = $opts{inpath_sans_sheet}->slurp_raw;
         my $chars = decode($input_enc, $octets, Encode::FB_CROAK);
@@ -1415,7 +1542,7 @@ sub convert_spreadsheet(@) {
         path(_final_outpath(\%opts))->spew_raw($octets);
         $done = 1;
       } else {
-        # Special case #2: No conversion is needed: Just copy the file or 
+        # Special case #2: No conversion is needed: Just copy the file or
         #   return the input path itself as the output
         if (defined $opts{outpath}) {
           warn "> No conversion needed, copying into ",qsh($opts{outpath}),"\n"
@@ -1440,7 +1567,7 @@ sub convert_spreadsheet(@) {
       my $dest = $outpath->child( $opts{ifbase}.".csv" );
       my $inpath = $opts{inpath_sans_sheet};
       my $s = eval{ symlink($inpath, $dest) };
-      if ($@) { # symlink unimplmented 
+      if ($@) { # symlink unimplmented
         btw dvis '>> $@' if $opts{debug};
         warn "> No conversion needed! Copying into ", qsh($dest),"\n"
           if $opts{verbose};
@@ -1456,7 +1583,7 @@ sub convert_spreadsheet(@) {
   if (! $done) {
     if ($opts{allsheets}) {
       _extract_all_csvs(\%opts);
-    } 
+    }
     else {
       # Result will be a single file.
       if ($opts{cvt_to} eq "csv") {
@@ -1481,7 +1608,7 @@ sub convert_spreadsheet(@) {
 
 # Open as a CSV, intuiting input encoding, converting spreadsheet if necessary.
 #
-# :crlf translation is enabled on the resulting file handle, which converts 
+# :crlf translation is enabled on the resulting file handle, which converts
 # DOS CR,LF to \n while passing *nix bare LF through unmolested.
 #
 # Input argument(s) are the same as for convert_spreadsheet (except
@@ -1496,7 +1623,7 @@ sub OpenAsCsv {
   # TODO: Rename {path} to {inpath} in all usages and rm this cruft;
   carp "Obsolete OpenAsCsv usage: Change path to inpath\n"
     if exists($opts{path}) and !$opts{silent};
-  $opts{inpath} //= delete $opts{path}; # be compatible with old API 
+  $opts{inpath} //= delete $opts{path}; # be compatible with old API
 
   my $inpath = delete $opts{inpath};
   croak "OpenAsCsv: missing 'inpath' option\n" unless $inpath;
@@ -1535,30 +1662,38 @@ Spreadsheet::Edit::IO - convert between spreadsheet and csv files
         qw/convert_spreadsheet OpenAsCsv
            cx2let let2cx @sane_CSV_read_options @sane_CSV_write_options/;
 
-  # Open a CSV file or result of converting a sheet from a spreadsheet 
-  # DEPRECATED? 
-  #
+  # Open a CSV file or result of converting a sheet from a spreadsheet
   my $hash = OpenAsCsv("/path/to/spreadsheet.odt!Sheet1");  # single-arg form
-  my $hash = OpenAsCsv(inpath => "/path/to/spreadsheet.odt", 
-                       sheetname -> "Sheet1"); 
+  my $hash = OpenAsCsv(inpath => "/path/to/spreadsheet.odt",
+                       sheetname -> "Sheet1");
+
   print "Reading ",$hash->{csvpath}," with encoding ",$hash->{encoding},"\n";
   while (<$hash->{fh}>) { ... }
 
   # Convert CSV to spreadsheet
   $hash = convert_spreadsheet(inpath => "mycsv.csv", cvt_to => "xlsx");
   print "Resulting spreadsheet path is $hash->{outpath}\n";
-  
-  # Convert a single sheet from a spreadsheet to CSV
-  $hash = convert_spreadsheet(inpath => "mywork.xls", sheetname => "Sheet1", 
+
+  # Just convert a sheet from a spreadsheet to UTF-8 encoded CSV
+  # without opening it.
+  $hash = convert_spreadsheet(inpath => "mywork.xls", sheetname => "Sheet1",
+                              input_encoding => 'UTF-8',
                               cvt_to => "csv");
-  open my $fh, "<", $hash->{outpath};
-  binmode $fh, ":encoding(":crlf:encoding(".$hash->{encoding}.")");
+  print "The extracted csv file is $hash->{outpath}",
+        " which is encoded as $hash->{encoding}\n";
+
   ...
 
-  # Convert all sheets in a spreadsheet to CSV files in a subdir
+  # Convert *all* sheets in a spreadsheet to CSV files in a subdir
   $hash = convert_spreadsheet(inpath => "mywork.xls", allsheets => 1,
                               cvt_to => "csv");
   system "ls -l ".$hash->{outpath};  # show resulting .csv files
+
+  # Transcode a windows-1252 encoded CSV to UTF-8
+  convert_spreadsheet(
+      inpath  => "input.csv",  input_encoding   => 'windows-1252',
+      outpath => "output.csv", output_encodoutg => 'UTF-8',
+  );
 
   # Translate between 0-based column index and letter code (A, B, etc.)
   print "The first column is column ", cx2let(0), " (duh!)\n";
@@ -1588,25 +1723,25 @@ Spreadsheet::Edit::IO - convert between spreadsheet and csv files
 
 =head1 DESCRIPTION
 
-Convert between CSV and spreadsheet files using external programs, plus some utility functions
+Convert between CSV and spreadsheet files using external tools, plus some utility functions
 
 =head2 $hash = OpenAsCsv INPUT
 
 =head2 $hash = OpenAsCsv inpath => INPUT, sheetname => SHEETNAME, ...
 
 This is a thin wrapper for C<convert_spreadsheet> followed by C<open>
-(MAYBE 2B DEPRECATED?)
 
 If a single argument is given it specifies INPUT; otherwise all arguments must
 be specified as key => value pairs, and may include any options supported
 by C<convert_spreadsheet>.
 
-INPUT may be a csv or spreadsheet workbook path; if a spreadsheet, 
-then a single "sheet" is converted, specified by either a !SHEETNAME suffix 
-in the INPUT path, or a separate C<< sheetname => SHEETNAME >> option.
+INPUT may be a csv or spreadsheet workbook path; if a spreadsheet,
+then a single "sheet" is converted, specified by either a !SHEETNAME suffix
+in the INPUT path, a separate C<< sheetname => SHEETNAME >> option,
+or unspecified to extract the only sheet (croaks if there is more than one).
 
-The resulting file handle refers to a guaranteed-seekable CSV file; 
-this will either be a temporary file (auto-removed at process exit), 
+The resulting file handle refers to a guaranteed-seekable CSV file;
+this will either be a temporary file (auto-removed at process exit),
 or the original INPUT if it was already a seekable csv file.
 
 RETURNS: A ref to a hash containing the following:
@@ -1622,9 +1757,9 @@ RETURNS: A ref to a hash containing the following:
 
 =head2 convert_spreadsheet INPUT, cvt_to=>"csv", allsheets => 1, OPTIONS
 
-This converts between CSV and various spreadsheet.  
+This converts between CSV and various spreadsheet.
 
-RETURNS: A ref to a hash containing: 
+RETURNS: A ref to a hash containing:
 
  {
   outpath   => path to the output file (or directory with 'allsheets')
@@ -1633,29 +1768,25 @@ RETURNS: A ref to a hash containing:
   encoding  => the encoding used when writing .csv files
  }
 
-INPUT is the input file path; it may be a separate first argument as 
+INPUT is the input file path; it may be a separate first argument as
 shown above, or else included in OPTIONS as C<< inpath =E<gt> INPUT >>.
 
-If C<outpath =E<gt> OUTPATH> is specifed then results are I<always> saved 
+If C<outpath =E<gt> OUTPATH> is specifed then results are I<always> saved
 to that path.  With C<allsheets> this is a directory, which will be created
 if necessary.
 
 If C<outpath> is NOT specified in OPTIONS then, with one exception,
-results are saved to a temporary file or directory and the path returned
+results are saved to a temporary file or directory and that path is returned
 as C<outpath> in the result hash.
-The exception is if no conversion is necessary 
+The exception is if no conversion is necessary
 (i.e. C<cvt_from> is the same as C<cvt_to>), when the
 input file itself is returned as C<outpath>.
 
 In all cases C<outpath> in the result hash points to the results.
 
-C<cvt_from> and C<cvt_to> are the filename suffixes (sans dot) of the
-corresponding file types, e.g. "csv", "xls", "xlsx", "odt" etc.
-These need not be specified when they can be inferred from INPUT
-or C<outpath> respectively.
-
-Some vestigial support for spreadsheet formats exists but does not work well
-and is not documented here.
+C<cvt_from> and C<cvt_to> need not be specified if they can be inferred
+from INPUT and C<outpath>.  They are the filename suffixes (sans dot)
+of the corresponding file types, e.g. "csv", "xls", "xlsx", "odt" etc.
 
 OPTIONS may also include:
 
@@ -1665,12 +1796,12 @@ OPTIONS may also include:
 
 The workbook 'sheet' name used when reading or writing a spreadsheet.
 
-An input sheet name may also be specified as "!sheetname" appended to 
+An input sheet name may also be specified as "!sheetname" appended to
 the INPUT path.
 
 =item allsheets => BOOL
 
-Valid only with C<< cvt_to =E<gt> 'csv' >>.   
+Valid only with C<< cvt_to =E<gt> 'csv' >>.
 All sheets in the input spreadsheet
 are converted to separate .csv files named "SHEETNAME.csv" in
 the 'outpath' directory.
@@ -1680,38 +1811,57 @@ the 'outpath' directory.
 Specifies the encoding of INPUT if it is a csv file.
 
 ENCODING may be a comma-separated list of encoding
-names which will be tried in the order until one seems to work
-(requires pre-reading the input file).
+names which will be tried in the order until one seems to work.
 If only one encoding is specified it will be used without trying it first.
 The default is "UTF-8,windows-1252".
 
 =item output_encoding => ENCODING
 
-Specifies the encoding to use when writing csv file(s).  
+Specifies the encoding to use when writing csv file(s).
 The default it 'UTF-8'.
 
-=item verbose => BOOL
+=item col_formats => [...]
 
-=item use_gnumeric => BOOL   # instead of libre/openoffice (DEPRECATED)
+This specifies how CSV data is imported into a spreadsheet.  Each element
+of the array may contain:
+
+  undef, "standard" or ""  (LibreOffice will auto-detect)
+  "text"                   (imported as unmolested text)
+  "MM/DD/YY",
+  "DD/MM/YY",
+  "YY/MM/DD",
+  "ignore"                 (do not import this column)
+
+Elements may also contain the numeric format codes defined by LibreOffice
+at L<https://wiki.documentfoundation.org/Documentation/DevGuide/Spreadsheet_Documents#Filter_Options_for_the_CSV_Filter>
+
+B<Automatic format detection:>
+Input CSV data is pre-scanned to auto-detect columns formats
+as much as possible.  This usually works well as long as dates are
+represented unambiguously, e.g. "2021-01-01" or "Jan 1, 2023".
+
+Currently auto-detection detects leading zeroes such as in U.S. Zip Codes,
+and MM/DD/YY or DD/MM/YY dates when a DD happens to be more than 12.
+
+=item verbose => BOOL
 
 =back
 
 =head3 B<'binmode' Argument For Reading result CSVs>
 
 It is not possible to control the line-ending style in output CSV files,
-but the following incantation will correctly read either DOS/Windows (CR,LF) 
-or *nix (LF) line endings as a single \n:
+but the following incantation will correctly read either DOS/Windows (CR,LF)
+or *nix (LF) line endings properly, i.e. as a single \n:
 
    open my $fh, "<", $resulthash->{outpath};
    my $enc = $resulthash->{encoding};
    binmode($fh, ":crlf:encoding($enc)");
 
-
 =head2 @sane_CSV_read_options
 
 =head2 @sane_CSV_write_options
 
-These contain options you will always want to use with 
+These contain options you will always want to use with
 S<<< C<< Text::CSV->new() >> >>>.
 Specifically, quotes and embedded newlines are handled correctly.
 

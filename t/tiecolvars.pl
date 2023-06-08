@@ -3,7 +3,7 @@ use FindBin qw($Bin);
 use lib $Bin;
 
 use t_Common qw/oops/; # strict, warnings, Carp etc.
-use t_TestCommon  # Test::More etc.
+use t_TestCommon  # Test2::V0 etc.
          qw/$verbose $silent $debug dprint dprintf
             bug mycheckeq_literal expect1 mycheck 
             verif_no_internals_mentioned

@@ -1,6 +1,8 @@
 Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, Spreadsheet::Edit::Log
 
-3.015->latest: Fixing portability issues with installation tests
+3.020 - Now fully working on Windows (Strawberry perl)
+
+3.015->3.019: Fixing portability issues with installation tests
 
 3.014 - IO::convert_spreadsheet() reworked.
 

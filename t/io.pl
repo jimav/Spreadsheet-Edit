@@ -4,7 +4,7 @@ use FindBin qw($Bin);
 use lib $Bin;
 use t_Common qw/oops/; # strict, warnings, Carp etc.
 
-use t_TestCommon  # Test::More etc.
+use t_TestCommon ':no-Test2',
          qw/$verbose $silent $debug dprint dprintf
             bug mycheckeq_literal expect1 mycheck 
             verif_no_internals_mentioned
@@ -22,6 +22,7 @@ use Spreadsheet::Edit::IO qw/convert_spreadsheet/;
 use Test::Deep::NoTest qw/eq_deeply/;
 
 { my $path; eval{ $path = Spreadsheet::Edit::IO::_openlibre_path() };
+  oops unless !!Spreadsheet::Edit::IO::spreadsheets_ok() == !!$path;
   if (!$path && $@ =~ /not find.*Libre/i) {
     say __FILE__,": Skipping all because LibreOffice is not installed"
       unless $silent;
@@ -101,13 +102,21 @@ eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
 #print $dirpath->child("Sheet1.csv")->slurp_utf8;
 #say "##########################";
 
-#my $testcsv_path = $dirpath->child("Sheet1.csv");
-my $testcsv_path = $tlib->child("Sheet1_unquoted.csv");
-my $exp_chars = $testcsv_path->slurp_utf8();
+
+# Well, we can't prevent CR,LF line endings on Windows.  So first
+# convert the test .csv to "local" line endings so it will match.
+my $local_testcsv = Path::Tiny->tempfile("local_testcsv_XXXXX");
+{ 
+  #my $testcsv_path = $dirpath->child("Sheet1.csv");
+  my $testcsv_path = $tlib->child("Sheet1_unquoted.csv");
+  my $chars = $testcsv_path->slurp({binmode => ":raw:encoding(UTF-8):crlf"});
+  $local_testcsv->spew({binmode => ":perlio:encoding(UTF-8)"}, $chars);
+} 
+my $exp_chars = $local_testcsv->slurp_utf8();
 
 # Round-trip csv -> ods -> csv check
 {
-  my $h1 = doconvert(inpath => $testcsv_path, cvt_to => "ods");
+  my $h1 = doconvert(inpath => $local_testcsv, cvt_to => "ods");
   my $h2 = doconvert(inpath => $h1->{outpath}, cvt_to => "csv");
   my $got_chars = path($h2->{outpath})->slurp_utf8;
   if ($got_chars eq $exp_chars) {
@@ -122,19 +131,19 @@ my $exp_chars = $testcsv_path->slurp_utf8();
 
 # "Read" a csv; should be a pass-thru without conversion
 {
-  read_spreadsheet {verbose => $verbose}, $testcsv_path;
+  read_spreadsheet {verbose => $verbose}, $local_testcsv;
   verif_Sheet1 "(extracted csv)";
-  my $hash = doconvert(inpath=>$testcsv_path, cvt_to => 'csv');
-  die "expected null converstion" unless $hash->{outpath} eq $testcsv_path;
+  my $hash = doconvert(inpath=>$local_testcsv, cvt_to => 'csv');
+  die "expected null converstion" unless $hash->{outpath} eq $local_testcsv;
 }
 
 # Extract "allsheets" from a csv (symlink or copy into outdir)
-{ my $h3 = doconvert(allsheets => 1, inpath => $testcsv_path, cvt_to => 'csv');
+{ my $h3 = doconvert(allsheets => 1, inpath => $local_testcsv, cvt_to => 'csv');
   warn dvis '##YY $h3' if $debug;
   my @got = path($h3->{outpath})->children;
   unless (@got==1 && (my $got_chars=$got[0]->slurp_utf8) eq $exp_chars) {
     die "'allsheets' from csv did not work",
-        dvis '\n$testcsv_path\n$h3\n@got\n$got_chars'
+        dvis '\n$local_testcsv\n$h3\n@got\n$got_chars'
   }
 }
 
@@ -145,7 +154,7 @@ my $exp_chars = $testcsv_path->slurp_utf8();
     say "------------- Transcode to/from $enc -------------" if $debug;
     my $fromutf8_result;
     { 
-      my $h = doconvert(inpath => $testcsv_path,
+      my $h = doconvert(inpath => $local_testcsv,
                         outpath => $tdir->child("${enc}.csv"),
                         output_encoding => $enc);
       my $got_octets = path($h->{outpath})->slurp_raw;
