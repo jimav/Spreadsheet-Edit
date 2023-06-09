@@ -445,11 +445,11 @@ sub _openlibre_path() {
             if (@hits) {
               # On windows, use soffice.com not .exe because it writes messages
               # to stdout not a window.  See https://help.libreoffice.org/7.5/en-GB/text/shared/guide/start_parameters.html?&DbPAR=SHARED&System=WIN
-              my $path = path( (first{ /soffice$/     } @hits) ||
-                               (first{ /soffice\.com/ } @hits) );
+              my $path = (first{ /soffice\.com$/ } @hits) ||
+                         (first{ /soffice$/      } @hits);
               if ($path) {
                 $prefix->subsumes($path) or oops dvis '$prefix $path';
-                my $subpath = $path->relative($prefix);
+                my $subpath = path($path)->relative($prefix);
                 if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
                   @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
                 }

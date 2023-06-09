@@ -21,17 +21,6 @@ use Spreadsheet::Edit::IO qw/convert_spreadsheet/;
 
 use Test::Deep::NoTest qw/eq_deeply/;
 
-{ my $path; eval{ $path = Spreadsheet::Edit::IO::_openlibre_path() };
-  oops unless !!Spreadsheet::Edit::IO::spreadsheets_ok() == !!$path;
-  if (!$path) {
-    die "$@ " if $@ and $@ !~ /not find.*Libre/i;
-    say __FILE__,": Skipping all because LibreOffice is not installed"
-      unless $silent;
-    exit 0
-  }
-  say "Using $path" unless $silent;
-}
-
 my $cwd = fastgetcwd;
 #my $input_xlsx_path = abs2rel(fast_abs_path("$Bin/../tlib/Test.xlsx"), $cwd);
 my $tlib = path("$Bin/../tlib")->absolute;
