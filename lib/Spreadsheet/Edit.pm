@@ -204,6 +204,7 @@ sub _generateHash_crow {  # %crow indexes cells in the current row during apply
 use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall
                               btw oops/;
 
+use Data::Dumper ();
 use Data::Dumper::Interp 5.019;
 
 use Carp;

@@ -27,12 +27,15 @@ our @EXPORT_OK = qw/@sane_CSV_read_options @sane_CSV_write_options/;
 use version ();
 use Carp;
 
+use File::Find ();
 use File::Copy ();
 use File::Copy::Recursive ();
+use File::Glob qw/bsd_glob/;
 
 use Path::Tiny qw/path/;
 
 # Path::Tiny OBVIATES NEED for many but we still need this
+use File::Spec ();
 use File::Spec::Functions qw/devnull tmpdir rootdir catdir catfile/;
 
 # Still sometimes convenient...
