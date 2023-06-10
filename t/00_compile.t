@@ -11,9 +11,10 @@ use Spreadsheet::Edit::IO qw/let2cx cx2let convert_spreadsheet
   is(!!Spreadsheet::Edit::IO::spreadsheets_ok(), !!$path);
   if (!$path) {
     die "$@ " if $@ and $@ !~ /not find.*Libre/i;
-    diag "LibreOffice is not installed\n";
+    diag "LibreOffice not found\n";
+  } else {
+    diag "_openlibre_path : $path";
   }
-  diag "_openlibre_path : $path";
 }
 
 ok(1, "Basic loading & import");

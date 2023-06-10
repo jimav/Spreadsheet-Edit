@@ -11,7 +11,9 @@ no warnings qw(experimental::lexical_subs);
 use feature qw(state lexical_subs current_sub);
 
 package Spreadsheet::Edit;
-$Spreadsheet::Edit::VERSION = 999.999; # over-ridden in released distribution
+
+# Allow "use <thismodule. VERSION ..." in development sandbox to not bomb
+{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 998.999; }
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion
 # DATE from Dist::Zilla::Plugin::OurDate
 

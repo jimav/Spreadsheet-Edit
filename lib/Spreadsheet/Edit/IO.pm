@@ -8,7 +8,9 @@ use feature qw(say state lexical_subs current_sub);
 no warnings qw(experimental::lexical_subs);
 
 package Spreadsheet::Edit::IO;
-$Spreadsheet::Edit::IO::VERSION = 999.999; # over-ridden in released dist.
+
+# Allow "use <thismodule. VERSION ..." in development sandbox to not bomb
+{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 998.999; }
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion
 # DATE from Dist::Zilla::Plugin::OurDate
 
@@ -387,9 +389,9 @@ sub _openlibre_path() {
   # I tried just doing File::Glob::bsd_glob('/*/*/*/opt/libre*/program') but
   # it silently failed even though the same glob works from the shell. Mmff...
   no warnings FATAL => 'all';
-  state $windows = ($^O eq "MSWin32");
+  state $is_MSWin = ($^O eq "MSWin32");
   my (@search_dirs, $searchfor_re, $maxdepth);
-  if ($windows) {
+  if ($is_MSWin) {
     @search_dirs = ("C:\\Program Files","C:\\Program Files (x86)");
     $searchfor_re = qr/^Program Files/;
     $maxdepth = 1;
@@ -415,7 +417,7 @@ sub _openlibre_path() {
         $! = 0;
         # https://github.com/Perl/perl5/issues/21143
         my $fullname = $File::Find::fullname;
-        if ($windows) {
+        if ($is_MSWin) {
             stat($_); # lstat will not have been done
             $fullname //= $File::Find::name;
         }
@@ -423,8 +425,9 @@ sub _openlibre_path() {
             !defined($fullname) # broken link, per docs
             || (! -r _) || (! -x _) # unreadable item or invalid "_" handle
                                  # https://github.com/Perl/perl5/issues/21122
-            || (!$windows && (stat(_))[7] == 0) # zero size ==> /proc or similar
+            || (!$is_MSWin && (stat(_))[7] == 0) # zero size ==> /proc or similar
             || /\$/ # $some_windows_special_thing$
+            || m#^/snap/(?!.*ffice)#  # snap which isn't *ffice
             || ! -r $fullname # presumably a symlink to unreadable
             || ! -x _                     # or unsearchable dir
            ) {
@@ -452,6 +455,8 @@ sub _openlibre_path() {
                 my $subpath = path($path)->relative($prefix);
                 if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
                   @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
+                  # We found where installations are, don't look deeper
+                  $maxdepth = $depth;
                 }
               }
             }
