@@ -453,6 +453,9 @@ sub _openlibre_path() {
               if ($path) {
                 $prefix->subsumes($path) or oops dvis '$prefix $path';
                 my $subpath = path($path)->relative($prefix);
+                # Ignore major version larger than 9.  There is a known-bad 24.x
+                # dev build out there...
+                next if $subpath =~ /(^|\D)[0-9][0-9]/;
                 if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
                   @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
                   # We found where installations are, don't look deeper

@@ -26,6 +26,9 @@ my $cwd = fastgetcwd;
 my $tlib = path("$Bin/../tlib")->absolute;
 my $input_xlsx_path = $tlib->child("Test.xlsx");
 
+# Is LibreOffice (or some substitute) installed?
+my $spreadsheets_ok = Spreadsheet::Edit::IO::spreadsheets_ok();
+
 sub verif_Sheet1(;$){
   my $msg = $_[0] // "";
   eq_deeply(title_rx(), 0) or die "${msg} title_rx is not 0";
@@ -69,28 +72,6 @@ sub doread($$) {
   read_spreadsheet {debug => $debug, verbose => $verbose, %$opts}, $inpath;
   confess "num_cols is not positive" unless $num_cols > 0;
 }
-# Test the various ways of specifying a sheet name
-doread({}, $input_xlsx_path."!Sheet1"); verif_Sheet1();
-doread({sheetname => "Sheet1"}, $input_xlsx_path); verif_Sheet1;
-doread({sheetname => "Sheet1"}, $input_xlsx_path."!Sheet1"); verif_Sheet1;
-doread({sheetname => "Another Sheet"}, $input_xlsx_path."!Another Sheet"); verif_Another_Sheet;
-
-# Confirm that conflicting specs are caught
-eval{my $dum=read_spreadsheet {sheetname => "Sheet1", verbose => $verbose}, $input_xlsx_path."!Another Sheet" };
-die "Conflicting sheetname opt and !suffix not caught" if $@ eq "";
-
-# Extract all sheets
-my $dirpath = Path::Tiny->tempdir;
-doconvert(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path, cvt_to => "csv");
-say dvis '###BBB $dirpath ->children : ',avis($dirpath->children) if $debug;
-my $got = [sort map{$_->basename} $dirpath->children];
-my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
-eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
-
-#say "### Sheet1.csv content ###";
-#print $dirpath->child("Sheet1.csv")->slurp_utf8;
-#say "##########################";
-
 
 # Well, we can't prevent CR,LF line endings on Windows.  So first
 # convert the test .csv to "local" line endings so it will match.
@@ -103,20 +84,47 @@ my $local_testcsv = Path::Tiny->tempfile("local_testcsv_XXXXX");
 } 
 my $exp_chars = $local_testcsv->slurp_utf8();
 
-# Round-trip csv -> ods -> csv check
-{
-  my $h1 = doconvert(inpath => $local_testcsv, cvt_to => "ods");
-  my $h2 = doconvert(inpath => $h1->{outpath}, cvt_to => "csv");
-  my $got_chars = path($h2->{outpath})->slurp_utf8;
-  if ($got_chars eq $exp_chars) {
-    say "Round-trip csv->ods->csv succeeded!\n" unless $silent;
-  } else {
-    $Data::Dumper::Interp::Foldwidth = 20;
-    die "Round-trip csv->ods->csv mismatch:\n",
-        ivis('Original: $exp_chars\n'),
-        ivis('Result:   $got_chars\n') ;
+# Test the various ways of specifying a sheet name
+if ($spreadsheets_ok) {
+  doread({}, $input_xlsx_path."!Sheet1"); verif_Sheet1();
+  doread({sheetname => "Sheet1"}, $input_xlsx_path); verif_Sheet1;
+  doread({sheetname => "Sheet1"}, $input_xlsx_path."!Sheet1"); verif_Sheet1;
+  doread({sheetname => "Another Sheet"}, $input_xlsx_path."!Another Sheet"); verif_Another_Sheet;
+
+  # Extract all sheets
+  my $dirpath = Path::Tiny->tempdir;
+  doconvert(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path, cvt_to => "csv");
+  say dvis '###BBB $dirpath ->children : ',avis($dirpath->children) if $debug;
+  my $got = [sort map{$_->basename} $dirpath->children];
+  my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
+  eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
+
+  # Round-trip csv -> ods -> csv check
+  {
+    my $h1 = doconvert(inpath => $local_testcsv, cvt_to => "ods");
+    my $h2 = doconvert(inpath => $h1->{outpath}, cvt_to => "csv");
+    my $got_chars = path($h2->{outpath})->slurp_utf8;
+    if ($got_chars eq $exp_chars) {
+      say "Round-trip csv->ods->csv succeeded!\n" unless $silent;
+    } else {
+      $Data::Dumper::Interp::Foldwidth = 20;
+      die "Round-trip csv->ods->csv mismatch:\n",
+          ivis('Original: $exp_chars\n'),
+          ivis('Result:   $got_chars\n') ;
+    }
   }
+} else { 
+  warn "Skipping spreadsheet tests because soffice is not installed\n" unless $silent;
 }
+
+# Confirm that conflicting specs are caught
+eval{my $dum=read_spreadsheet {sheetname => "Sheet1", verbose => $verbose}, $input_xlsx_path."!Another Sheet" };
+die "Conflicting sheetname opt and !suffix not caught" if $@ eq "";
+
+#say "### Sheet1.csv content ###";
+#print $dirpath->child("Sheet1.csv")->slurp_utf8;
+#say "##########################";
+
 
 # "Read" a csv; should be a pass-thru without conversion
 {
