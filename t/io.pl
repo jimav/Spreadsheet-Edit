@@ -6,7 +6,7 @@ use t_Common qw/oops/; # strict, warnings, Carp etc.
 
 use t_TestCommon ':no-Test2',
          qw/$verbose $silent $debug dprint dprintf
-            bug mycheckeq_literal expect1 mycheck 
+            bug mycheckeq_literal expect1 mycheck
             verif_no_internals_mentioned
             insert_loc_in_evalstr verif_eval_err
             arrays_eq hash_subset
@@ -34,9 +34,12 @@ sub verif_Sheet1(;$){
   eq_deeply(title_rx(), 0) or die "${msg} title_rx is not 0";
   eq_deeply([@{ title_row() }],["First Name","Last Name","Email","Date"])
     or die "${msg} Sheet1 titles wrong";
-  eq_deeply([@{ $rows[3] }],["Françoise-Athénaïs","de Rochechouart","","10/05/1640"])
   #eq_deeply([@{ $rows[3] }],["Françoise-Athénaïs","de Rochechouart","","Oct 5, 1640"])
-    or confess "${msg} Sheet1 row 4 is wrong, got: ",avis(@{ $rows[3] });
+  my $exp = ["Françoise-Athénaïs","de Rochechouart","","10/05/1640"];
+  eq_deeply([@{ $rows[3] }],$exp)
+    or confess "${msg} Sheet1 row 4 is wrong,\n",
+               "  got: ",avis(@{ $rows[3] }),"\n",
+               "  exp: ",avis(@{ $exp }),
 }
 sub verif_Another_Sheet(;$) {
   my $msg = $_[0] // "";
@@ -45,7 +48,7 @@ sub verif_Another_Sheet(;$) {
     or confess "Another Sheet titles wrong;",vis([@{ title_row() }]);
   apply {
     my $exp = 100 + $rx - 1;
-    eq_deeply($crow{B}, $exp) 
+    eq_deeply($crow{B}, $exp)
       or confess "$msg Another Sheet:Col B, rx $rx is $exp";
   }
 }
@@ -76,12 +79,12 @@ sub doread($$) {
 # Well, we can't prevent CR,LF line endings on Windows.  So first
 # convert the test .csv to "local" line endings so it will match.
 my $local_testcsv = Path::Tiny->tempfile("local_testcsv_XXXXX");
-{ 
+{
   #my $testcsv_path = $dirpath->child("Sheet1.csv");
   my $testcsv_path = $tlib->child("Sheet1_unquoted.csv");
   my $chars = $testcsv_path->slurp({binmode => ":raw:encoding(UTF-8):crlf"});
   $local_testcsv->spew({binmode => ":perlio:encoding(UTF-8)"}, $chars);
-} 
+}
 my $exp_chars = $local_testcsv->slurp_utf8();
 
 # Test the various ways of specifying a sheet name
@@ -113,7 +116,7 @@ if ($spreadsheets_ok) {
           ivis('Result:   $got_chars\n') ;
     }
   }
-} else { 
+} else {
   warn "Skipping spreadsheet tests because soffice is not installed\n" unless $silent;
 }
 
@@ -150,7 +153,7 @@ die "Conflicting sheetname opt and !suffix not caught" if $@ eq "";
   for my $enc (qw/UTF-8 UTF-16 UTF-32/) {
     say "------------- Transcode to/from $enc -------------" if $debug;
     my $fromutf8_result;
-    { 
+    {
       my $h = doconvert(inpath => $local_testcsv,
                         outpath => $tdir->child("${enc}.csv"),
                         output_encoding => $enc);
@@ -160,7 +163,7 @@ die "Conflicting sheetname opt and !suffix not caught" if $@ eq "";
       $fromutf8_result = $h->{outpath};
     }
     { my $h = doconvert(inpath => $fromutf8_result,
-                        cvt_to => "csv", 
+                        cvt_to => "csv",
                         input_encoding => $enc,
                         #output_encoding => 'utf8'
                        );

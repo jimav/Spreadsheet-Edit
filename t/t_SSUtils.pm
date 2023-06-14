@@ -7,7 +7,7 @@ use parent 'Exporter';
 
 our @EXPORT = qw( fmtsheet
                   check_colspec_is_undef
-                  check_no_sheet 
+                  check_no_sheet
                   create_testdata
                 );
 
@@ -32,7 +32,7 @@ sub check_colspec_is_undef(@) {
   no strict 'refs';
   my $s = sheet({package => caller});
   foreach(@_) {
-    bug "Colspec ".vis($_)." is unexpectedly defined" 
+    bug "Colspec ".vis($_)." is unexpectedly defined"
       if defined ${"$pkg\::colx"}{$_};
     eval{ $s->spectocx($_) }; verif_eval_err;
   }

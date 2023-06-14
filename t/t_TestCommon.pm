@@ -43,10 +43,10 @@ BEGIN{
   confess "Test::More already loaded!" if defined( &Test::More::ok );
   confess "Test2::V0 already loaded!" if defined( &Test2::V0::import );
 
-  # Force UTF-8 (and remove any other encoder) regardless of the 
-  # environment/terminal.  This allows tests to use capture {...} and check 
-  # the results independent of the environment, even if when printed the 
-  # results may be garbled.
+  # Force UTF-8 (and remove any other encoder) regardless of the
+  # environment/terminal.  This allows tests to use capture {...} and check
+  # the results independent of the environment, even though printed results
+  # may be garbled.
   binmode(STDIN, ":raw:encoding(UTF-8):crlf");
   if ($^O eq "MSWin32") {
     binmode(STDOUT, ":raw:encoding(UTF-8)");
@@ -86,6 +86,7 @@ our @EXPORT_OK = qw/$debug $silent $verbose dprint dprintf/;
 
 use Import::Into;
 use Data::Dumper;
+# Do *not* load Data::Dumper::Interp (because we might be testing it...)
 use Cwd qw/getcwd abs_path/;
 use POSIX qw/INT_MAX/;
 use File::Basename qw/dirname/;
@@ -203,19 +204,21 @@ sub string_to_tempfile($@) {
   wantarray ? ($path,$fh) : $path
 }
 
-# Run a Perl script in a sub-process, forcing UTF-8 encoding.
+# Run a Perl script in a sub-process.
 #
-# -CIOE is passed and LANG is unconditionally set to indicate UTF-8 stdio 
-# regardless of the actual test environment.  This is because the output 
-# will be consumed by a test checker rather than actually displayed 
-# on the real STDOUT/ERR (except for debugging, when results may be garbled).
+# Provides -I options to mimic @INC (PERL5LIB is often not set)
 #
-# Also provides -I options to mimic @INC (PERL5LIB is often not set)
+# -CIOE is passed to make stdio UTF-8 regardless of the actual test
+# environment, but if the script does e.g. "use open ':locale'" it will
+# override that.   I'm forcing LC_ALL=C so things like date and number
+# formats will be predictable for testing.
 #
 # This is usually enclosed in Tiny::Capture::capture { ... }
+#
 #    ==> IMPORTANT: Be sure STDOUT/ERR has :encoding(...) set beforehand
 #        because Tiny::Capture will decode captured output the same way.
 #        Otherwise wide chars will be corrupted
+#
 #
 sub run_perlscript(@) {
   my $tf; # keep in scope until no longer needed
@@ -240,13 +243,14 @@ sub run_perlscript(@) {
       }
     }
   }
-  delete local $ENV{LC_ALL};
-  local $ENV{LANG} = "C.UTF-8";
+
+  local $ENV{LC_ALL} = "C";
+
   if ($debug) {
     my $msg = "%%% run_perlscript >";
-    for my $k (sort keys %ENV) { 
+    for my $k (sort keys %ENV) {
       next unless $k =~ /^(LC|LANG)/;
-      $msg .= " $k='$ENV{$k}'" 
+      $msg .= " $k='$ENV{$k}'"
     }
     $msg .= " $^X";
     $msg .= " '${_}'" foreach (@perlargs);
@@ -350,7 +354,7 @@ END{
 # Find the ancestor build or checkout directory (it contains a "lib" subdir)
 # and derive the package name from e.g. "My-Pack" or "My-Pack-1.234"
 my $testee_top_module;
-for (my $path=path(__FILE__); 
+for (my $path=path(__FILE__);
              $path ne Path::Tiny->rootdir; $path=$path->parent) {
   if (-e (my $p = $path->child("dist.ini"))) {
     $p->slurp() =~ /^ *name *= *(\S+)/i or oops;
@@ -380,7 +384,7 @@ sub verif_no_internals_mentioned($) { # croaks if references found
   # Ignore object refs like Some::Package=THING(hexaddr)
   s/(?<!\w)\w[\w:\$]*=(?:REF|ARRAY|HASH|SCALAR|CODE|GLOB)\(0x[0-9a-f]+\)//g;
 
-  # Ignore Data::Dumper::addrvis output like Some::Package<dec:hex>
+  # Ignore Data::Dumper::Interp::addrvis output like Some::Package<dec:hex>
   s/(?<!\w)\w[\w:\$]*<\d+:[\da-f]+>//g;
 
   # Mask references to our test library files named t_something.pm

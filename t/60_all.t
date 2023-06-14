@@ -44,7 +44,7 @@ plan tests => ($debug||$verbose) ? scalar(@subtests)+1 : scalar(@subtests) * 2;
 
 # Note: --silent --verbose etc. arguments are parsed in t_TestCommon.pm
 
-##### Run with --silent ##### 
+##### Run with --silent #####
 SKIP: {
   skip "Skipping --silent tests because \$debug or \$verbose is true" if $debug || $verbose;
   for my $st (@subtests) {

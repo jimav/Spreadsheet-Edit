@@ -17,7 +17,7 @@ BEGIN{
      [ 100,       200       ],
    ]
   );
-  
+
   $withARGV_path = create_testdata(
    name => "withARGV",
    rows => [
@@ -35,7 +35,7 @@ BEGIN{
 
 { my ($out, $err) = capture {
     run_perlscript('-wE', '
-       package Foo::Clash1; 
+       package Foo::Clash1;
        sub TitleA { 42 };
        use Spreadsheet::Edit::Preload '.$opthash_comma.vis($main::tdata1_path->stringify).';
        apply {
@@ -53,7 +53,7 @@ BEGIN{
 
 { my ($out, $err) = capture {
     run_perlscript('-wE', '
-       package Foo::Clash1; 
+       package Foo::Clash1;
        use Spreadsheet::Edit::Preload '.$opthash_comma.vis($main::withARGV_path->stringify).';
        ');
   };
