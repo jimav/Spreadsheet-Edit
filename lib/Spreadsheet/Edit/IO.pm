@@ -381,9 +381,17 @@ sub _openlibre_path() {
     oops     if !defined($sp1);
     return 1 if !defined($sp2);
     # Use longest version in the (sub-)path, e.g. "4.4.1/opt/openoffice4/..."
-    my (@v1) = sort { length($a) <=> length($b) } ($sp1 =~ /(\d[.\d]*)/g);
-    my (@v2) = sort { length($a) <=> length($b) } ($sp2 =~ /(\d[.\d]*)/g);
-    version->parse($v1[-1]//0) <=> version->parse($v2[-1]//0)
+    my (@v1) = sort { length($a) <=> length($b) } ($sp1 =~ /(\d[.\da-z]*)/ag);
+    my (@v2) = sort { length($a) <=> length($b) } ($sp2 =~ /(\d[.\da-z]*)/ag);
+    my $v1 = $v1[-1]//0;
+    my $v2 = $v2[-1]//0;
+    if ($v1 =~ s/alpha/0/) {
+      return -1 unless $v2 =~ s/alpha/0/;
+    }
+    if ($v2 =~ /alpha/) {
+      return +1
+    }
+    version->parse($v1) <=> version->parse($v2)
   }
 
   # I tried just doing File::Glob::bsd_glob('/*/*/*/opt/libre*/program') but
@@ -405,6 +413,18 @@ sub _openlibre_path() {
     # depth: /*/*/<unpackparent>/opt/libreofficeXXX/program/
     #         1 2    3            4
   }
+
+  my $debug = $ENV{SPREADSHEET_EDIT_FINDDEBUG};
+  my sub _Findvarsmsg() {
+    if (u($_) eq u($File::Find::name) && u($_) eq u($File::Find::fullname)) {
+      return qsh($_)."\n"
+    }
+    if (u($_) eq u($File::Find::name)) {
+      return "\$_=name=".qsh($_)." -> ".qsh($File::Find::fullname)."\n";
+    }
+    "\$_=".qsh($_)." name=".qsh($File::Find::name)." fullname=".qsh($File::Find::fullname)."\n";
+  }
+
   my %results;
   $ENV{SPREADSHEET_EDIT_NOLOSEARCH} or
   File::Find::find(
@@ -417,29 +437,36 @@ sub _openlibre_path() {
         $! = 0;
         # https://github.com/Perl/perl5/issues/21143
         my $fullname = $File::Find::fullname;
-        if ($is_MSWin) {
-            stat($_); # lstat will not have been done
-            $fullname //= $File::Find::name;
+        if (!defined($fullname) && $is_MSWin) {
+            stat($_); # lstat was not done
+            $fullname = $File::Find::name;
+        }
+        unless (-d _ || -l _) {
+          warn "# _ notdir/symlink: ",_Findvarsmsg() if $debug;
+          $File::Find::prune = 1; # in case it really is
+          return;
         }
         if (
             !defined($fullname) # broken link, per docs
             || (! -r _) || (! -x _) # unreadable item or invalid "_" handle
                                  # https://github.com/Perl/perl5/issues/21122
-            || (!$is_MSWin && (stat(_))[7] == 0) # zero size ==> /proc or similar
+            || (!$is_MSWin && (stat(_))[7] == 0) # zero size ==> /proc etc.
             || /\$/ # $some_windows_special_thing$
-            || m#^/snap/(?!.*ffice)#  # snap which isn't *ffice
             || ! -r $fullname # presumably a symlink to unreadable
             || ! -x _                     # or unsearchable dir
+            || m#^/snap/(?!.*ffice)#  # snap other than e.g. /snap/libreoffice
+            || m#^/(proc|dev|sys|tmp|boot|run|lost+found|usr/(include|src))$#n
            ) {
+          warn "# PRUNING ",_Findvarsmsg() if $debug;
           $File::Find::prune = 1;
           return
         }
-        return unless -d _;
+        warn "# DIR: ",_Findvarsmsg() if $debug;
         # Maximum depth: /*/*/<unpackparent>/opt/libreofficeXXX/program/
         my $path = path($_);
         my $depth = scalar(() = $path->stringify =~ m#(/)#g);
         if (basename($_) =~ $searchfor_re) { # ^opt$ or ^Program Files
-          my $prefix = path($_)->parent;
+          my $prefix = path($_)->parent->parent;
           for my $o_l (qw/libre open/) {
             my $pattern
                  = path($_)->child("${o_l}*/program/soffice*")->canonpath;
@@ -453,9 +480,6 @@ sub _openlibre_path() {
               if ($path) {
                 $prefix->subsumes($path) or oops dvis '$prefix $path';
                 my $subpath = path($path)->relative($prefix);
-                # Ignore major version larger than 9.  There is a known-bad 24.x
-                # dev build out there...
-                next if $subpath =~ /(^|\D)[0-9][0-9]/;
                 if (_cmp_subpaths($subpath, $results{$o_l}{subpath}) >= 0) {
                   @{$results{$o_l}}{qw/path subpath/} = ($path, $subpath);
                   # We found where installations are, don't look deeper
@@ -467,6 +491,7 @@ sub _openlibre_path() {
           }
         }
         if ($depth == $maxdepth) {
+          warn "# pruning at maxdepth $depth ",qsh($_),"\n" if $debug;
           $File::Find::prune = 1;
           return;
         }

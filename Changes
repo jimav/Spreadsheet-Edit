@@ -1,6 +1,6 @@
 Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, Spreadsheet::Edit::Log
 
-3.026 - Test portabilty fixes; remove white-space errors
+3.028 - Test portabilty fixes; remove white-space errors
 3.021 - Fix release mistake (wrongly required Win32API::Net on all platforms)
 3.020 - Now fully working on Windows (Strawberry perl)
 3.015->3.019: Fixing portability issues with installation tests
