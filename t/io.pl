@@ -4,6 +4,8 @@ use FindBin qw($Bin);
 use lib $Bin;
 use t_Common qw/oops/; # strict, warnings, Carp etc.
 
+$Carp::Verbose = 1; # show backtrace on errors
+
 use t_TestCommon ':no-Test2',
          qw/$verbose $silent $debug dprint dprintf
             bug mycheckeq_literal expect1 mycheck

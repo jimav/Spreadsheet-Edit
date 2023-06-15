@@ -32,7 +32,8 @@ is(!!Spreadsheet::Edit::IO::spreadsheets_ok(), !!$path);
 if (!$path) {
   diag "LibreOffice not found\n";
 } else {
-  diag "_openlibre_path : $path";
+  diag "_openlibre_path=$path",
+       " version=",u(Spreadsheet::Edit::IO::_openlibre_features->{raw_version});
 }
 
 ok(1, "Basic loading & import; find LibreOffice");

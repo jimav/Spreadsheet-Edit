@@ -515,26 +515,27 @@ sub _openlibre_features() {
   state $hash;
   return $hash if defined $hash;
   my $prog = _openlibre_path() // return(($hash={ available => 0 }));
-  my $version;
+  my $raw_version;
   # This is gross but fast and works in recent versions of LO
   if (my $fh = eval{ path($prog)->realpath->parent->child("types/offapi.rdb")
                           ->filehandle("<",":raw")} ) {
     my $octets; sysread $fh, $octets, 100;
     if ($octets =~ /Created by LibreOffice (\d+\.\d+\.\w+)/) {
-      $version = version->parse("v$1");
+      $raw_version = $1;
     }
   }
-  unless ($version) {
+  unless ($raw_version) {
     if (qx/$prog --version 2>&1/ =~ /Libre.*? (\d+\.\d+\.\w+)/) {
-      $version = version->parse("v$1");
+      $raw_version = $1;
     } else {
       warn "$prog --version DID NOT WORK\n";
     }
   }
-  unless ($version) {
+  unless ($raw_version) {
     warn "WARNING: Could not determine version of $prog\n";
-    $version = version->parse("v99.99");
+    $raw_version = "999.01";
   }
+  my $version = version->parse("v$raw_version");
   $hash = {
     available => 1,
     # LibreOffice 7.2 allows extracting all sheets at once
@@ -544,23 +545,24 @@ sub _openlibre_features() {
     named_sheet => 0,
     # Supported output formats are too many to list
     ousuf_any => 1,
+    raw_version => $raw_version, version => "$version",
   }
 }
 
-sub _openlibre_supports_allsheets() { _openlibre_features->{allsheets} }
-sub _openlibre_supports_named_sheet() { _openlibre_features->{named_sheet} }
-sub _openlibre_supports_writing($) { _openlibre_features->{available} }
+sub _openlibre_supports_allsheets() { _openlibre_features()->{allsheets} }
+sub _openlibre_supports_named_sheet() { _openlibre_features()->{named_sheet} }
+sub _openlibre_supports_writing($) { _openlibre_features()->{available} }
 
 sub _ssconvert_features() { return { availble => 0 } } # TODO add back?
 sub _ssconvert_supports_allsheets() { _ssconvert_features()->{allsheets} }
 sub _ssconvert_supports_named_sheet() { _ssconvert_features()->{named_sheet} }
-sub _ssconvert_supports_writing($) { _ssconvert_features->{available} }
+sub _ssconvert_supports_writing($) { _ssconvert_features()->{available} }
 
 # This allows users (e.g. App-diff_spreadsheets tests) to determine
 # if external tool(s) are available to convert to/from spreadsheets
 # (CSVs are supported directly so can always be used)
 sub spreadsheets_ok() {
-  _openlibre_features->{available} || _ssconvert_features->{availble}
+  _openlibre_features()->{available} || _ssconvert_features()->{availble}
 }
 
 =for Pod::Coverage spreadsheets_ok
@@ -691,7 +693,7 @@ sub _convert_using_openlibre($$$) {
   my $saved_UserInstallation = $ENV{UserInstallation};
   # URI format is file://server/path where 'server' is empty. "file://path" is
   # "never correct, but is often used" en.wikipedia.org/wiki/File_URI_scheme
-  # Correct examples: file::///tmp/something  file:///C:/somewhere  
+  # Correct examples: file::///tmp/something  file:///C:/somewhere
   $ENV{UserInstallation} = URI::file->new(_get_tool_profdir($prog)->canonpath);
   warn "Temporarily set UserInstallation=$ENV{UserInstallation}\n" if $debug;
   scope_guard {
@@ -880,7 +882,6 @@ sub _convert_using_openlibre($$$) {
     $opts->{suppress_stdout} = 1;
     #$opts->{suppress_stderr} = 1;
   }
-$opts->{suppress_stdout} = 1; ###TEMP unconditional
 
   my $cmdstatus = _runcmd($opts, @cmd);
 
@@ -894,9 +895,10 @@ $opts->{suppress_stdout} = 1; ###TEMP unconditional
   my @result_files = path($tdir)->children;
   btw dvis '>> @result_files' if $debug;
   if (@result_files == 0) {
-    croak qsh($src)." is missing or unreadable\n"
+    croak qsh($src)." is missing or unreadable\n", "cmd: @cmd\n"
       unless -r $src;
-    croak "Something went wrong, ",path($prog)->basename," produced no output\n"
+    croak "Something went wrong, ",path($prog)->basename," produced no output\n",
+          "cmd: @cmd\n"
   }
 
   if ($opts->{allsheets}) {
@@ -1413,14 +1415,14 @@ sub _tool_extract_one_csv($$) {
   scope_guard { _release_lock($opts); };
 
   confess "should not get here" if $opts->{sheetname};
-  if (_openlibre_features->{available}) {
+  if (_openlibre_features()->{available}) {
     _convert_using_openlibre($opts, $opts->{inpath_sans_sheet}, $destpath);
   } else {
     _convert_using_ssconvert($opts, $opts->{inpath_sans_sheet}, $destpath);
   }
 }
 sub _tool_can_extract_current_sheet() {
-  _openlibre_features->{available} || _ssconvert_features->{available}
+  _openlibre_features()->{available} || _ssconvert_features()->{available}
 }
 
 sub _tool_write_spreadsheet($$) {
@@ -1692,7 +1694,7 @@ Spreadsheet::Edit::IO - convert between spreadsheet and csv files
 
  use Spreadsheet::Edit::IO qw/
               convert_spreadsheet OpenAsCsv
-              cx2let let2cx 
+              cx2let let2cx
               @sane_CSV_read_options @sane_CSV_write_options/;
 
  # Open a CSV file or result of converting a sheet from a spreadsheet
@@ -1810,8 +1812,8 @@ input file itself is returned as C<outpath>.
 
 In all cases C<outpath> in the result hash points to the results.
 
-C<cvt_to> or C<cvt_from> are filename suffixes (sans dot) 
-e.g. "csv", "xlsx", etc., and need not be specified when indicated by 
+C<cvt_to> or C<cvt_from> are filename suffixes (sans dot)
+e.g. "csv", "xlsx", etc., and need not be specified when indicated by
 C<outpath> or INPUT parameters.
 
 OPTIONS may also include:
@@ -1826,7 +1828,7 @@ the INPUT path.
 
 =item allsheets => BOOL
 
-B<All> sheets in the input 
+B<All> sheets in the input
 are converted to separate .csv files named "SHEETNAME.csv" in
 the 'outpath' directory.  C<< cvt_to =E<gt> 'csv' >> is also requred.
 
