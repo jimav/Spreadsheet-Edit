@@ -28,7 +28,7 @@ my $path;
     fail("File::Find trouble") unless $debug && !$caught;
   }
 }
-is(!!Spreadsheet::Edit::IO::spreadsheets_ok(), !!$path);
+is(!!Spreadsheet::Edit::IO::can_cvt_spreadsheets(), !!$path);
 if (!$path) {
   diag "LibreOffice not found\n";
 } else {

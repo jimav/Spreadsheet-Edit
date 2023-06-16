@@ -455,7 +455,7 @@ sub _openlibre_path() {
             || ! -r $fullname # presumably a symlink to unreadable
             || ! -x _                     # or unsearchable dir
             || m#^/snap/(?!.*ffice)#  # snap other than e.g. /snap/libreoffice
-            || m#^/(proc|dev|sys|tmp|boot|run|lost+found|usr/(include|src))$#n
+            || m#^/(proc|dev|sys|tmp|boot|run|lost+found|usr/(include|src))$#
            ) {
           warn "# PRUNING ",_Findvarsmsg() if $debug;
           $File::Find::prune = 1;
@@ -558,14 +558,23 @@ sub _ssconvert_supports_allsheets() { _ssconvert_features()->{allsheets} }
 sub _ssconvert_supports_named_sheet() { _ssconvert_features()->{named_sheet} }
 sub _ssconvert_supports_writing($) { _ssconvert_features()->{available} }
 
-# This allows users (e.g. App-diff_spreadsheets tests) to determine
-# if external tool(s) are available to convert to/from spreadsheets
-# (CSVs are supported directly so can always be used)
-sub spreadsheets_ok() {
+# These allow users (e.g. App-diff_spreadsheets tests) to determine
+# if external tool(s) are available to convert between spreadsheet formats
+# or to/from csv (CSVs are supported directly so can always be used)
+# Currently used by t/io.pl to skip tests
+sub can_cvt_spreadsheets() {
   _openlibre_features()->{available} || _ssconvert_features()->{availble}
 }
+sub can_extract_allsheets() {
+  _openlibre_supports_allsheets() || _ssconvert_supports_allsheets()
+}
+sub can_extract_named_sheet() {
+  can_extract_allsheets() # used to emulate
+    || _openlibre_supports_named_sheet() || _ssconvert_supports_named_sheet()
+}
 
-=for Pod::Coverage spreadsheets_ok
+=for Pod::Coverage can_cvt_spreadsheets can_extract_allsheets
+-for Pod::Coverage can_extract_named_sheet
 =cut
 
 sub _runcmd($@) {
@@ -1408,14 +1417,11 @@ sub _tool_can_extract_csv_byname() {
 sub _tool_extract_one_csv($$) {
   my ($opts, $destpath) = @_;
 
-  ## FIXME: This is not quite right--_tool_write_spreadsheet()
-  ##  contains almost the same code.  Should be a better factoring...
-
   _get_exclusive_lock($opts);
   scope_guard { _release_lock($opts); };
 
-  confess "should not get here" if $opts->{sheetname};
   if (_openlibre_features()->{available}) {
+    oops if $opts->{sheetname} && !_openlibre_supports_named_sheet();
     _convert_using_openlibre($opts, $opts->{inpath_sans_sheet}, $destpath);
   } else {
     _convert_using_ssconvert($opts, $opts->{inpath_sans_sheet}, $destpath);
@@ -1431,7 +1437,11 @@ sub _tool_write_spreadsheet($$) {
   _get_exclusive_lock($opts);
   scope_guard { _release_lock($opts); };
 
-  if (_openlibre_supports_writing($opts->{cvt_to})) {
+  # ssconvert allows specifying the sheetname when importing a csv but not LO
+  if ($opts->{sheetname} && _ssconvert_supports_writing($opts->{cvt_to})) {
+    _convert_using_ssconvert($opts, $opts->{inpath_sans_sheet}, $destpath);
+  }
+  elsif (_openlibre_supports_writing($opts->{cvt_to})) {
     if ($opts->{sheetname}) {
       carp "WARNING: Sheet name when creating a spreadsheet will be ignored\n";
       delete $opts->{sheetname};

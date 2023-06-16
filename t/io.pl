@@ -29,7 +29,9 @@ my $tlib = path("$Bin/../tlib")->absolute;
 my $input_xlsx_path = $tlib->child("Test.xlsx");
 
 # Is LibreOffice (or some substitute) installed?
-my $spreadsheets_ok = Spreadsheet::Edit::IO::spreadsheets_ok();
+my $can_cvt_spreadsheets    = Spreadsheet::Edit::IO::can_cvt_spreadsheets();
+my $can_extract_named_sheet = Spreadsheet::Edit::IO::can_extract_named_sheet();
+my $can_extract_allsheets   = Spreadsheet::Edit::IO::can_extract_allsheets();
 
 sub verif_Sheet1(;$){
   my $msg = $_[0] // "";
@@ -79,7 +81,7 @@ sub doread($$) {
 }
 
 # Well, we can't prevent CR,LF line endings on Windows.  So first
-# convert the test .csv to "local" line endings so it will match.
+# convert the test data .csv to "local" line endings so it will match.
 my $local_testcsv = Path::Tiny->tempfile("local_testcsv_XXXXX");
 {
   #my $testcsv_path = $dirpath->child("Sheet1.csv");
@@ -90,19 +92,26 @@ my $local_testcsv = Path::Tiny->tempfile("local_testcsv_XXXXX");
 my $exp_chars = $local_testcsv->slurp_utf8();
 
 # Test the various ways of specifying a sheet name
-if ($spreadsheets_ok) {
-  doread({}, $input_xlsx_path."!Sheet1"); verif_Sheet1();
-  doread({sheetname => "Sheet1"}, $input_xlsx_path); verif_Sheet1;
-  doread({sheetname => "Sheet1"}, $input_xlsx_path."!Sheet1"); verif_Sheet1;
-  doread({sheetname => "Another Sheet"}, $input_xlsx_path."!Another Sheet"); verif_Another_Sheet;
-
-  # Extract all sheets
-  my $dirpath = Path::Tiny->tempdir;
-  doconvert(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path, cvt_to => "csv");
-  say dvis '###BBB $dirpath ->children : ',avis($dirpath->children) if $debug;
-  my $got = [sort map{$_->basename} $dirpath->children];
-  my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
-  eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
+if ($can_cvt_spreadsheets) {
+  if ($can_extract_named_sheet) {
+    doread({}, $input_xlsx_path."!Sheet1"); verif_Sheet1();
+    doread({sheetname => "Sheet1"}, $input_xlsx_path); verif_Sheet1;
+    doread({sheetname => "Sheet1"}, $input_xlsx_path."!Sheet1"); verif_Sheet1;
+    doread({sheetname => "Another Sheet"}, $input_xlsx_path."!Another Sheet"); verif_Another_Sheet;
+  } else {
+    warn "Skipping extract-by-sheetname because soffice is too old\n" unless $silent;
+  }
+  if ($can_extract_allsheets) {
+    # Extract all sheets
+    my $dirpath = Path::Tiny->tempdir;
+    doconvert(outpath => $dirpath, allsheets => 1, inpath => $input_xlsx_path, cvt_to => "csv");
+    say dvis '###BBB $dirpath ->children : ',avis($dirpath->children) if $debug;
+    my $got = [sort map{$_->basename} $dirpath->children];
+    my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
+    eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
+  } else {
+    warn "Skipping 'allsheets' test because soffice is too old\n" unless $silent;
+  }
 
   # Round-trip csv -> ods -> csv check
   {
@@ -119,7 +128,7 @@ if ($spreadsheets_ok) {
     }
   }
 } else {
-  warn "Skipping spreadsheet tests because soffice is not installed\n" unless $silent;
+  warn "Spreadsheet tests skipped because soffice is not installed\n" unless $silent;
 }
 
 # Confirm that conflicting specs are caught
