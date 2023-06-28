@@ -99,7 +99,7 @@ if ($can_cvt_spreadsheets) {
     doread({sheetname => "Sheet1"}, $input_xlsx_path."!Sheet1"); verif_Sheet1;
     doread({sheetname => "Another Sheet"}, $input_xlsx_path."!Another Sheet"); verif_Another_Sheet;
   } else {
-    warn "Skipping extract-by-sheetname because soffice is too old\n" unless $silent;
+    warn "# Skipping extract-by-sheetname because soffice is too old\n" unless $silent;
   }
   if ($can_extract_allsheets) {
     # Extract all sheets
@@ -110,7 +110,7 @@ if ($can_cvt_spreadsheets) {
     my $exp = [sort "Sheet1.csv", "Another Sheet.csv"];
     eq_deeply($got, $exp) or die dvis 'Missing or extra sheets: $got $exp';
   } else {
-    warn "Skipping 'allsheets' test because soffice is too old\n" unless $silent;
+    warn "# Skipping 'allsheets' test because soffice is too old\n" unless $silent;
   }
 
   # Round-trip csv -> ods -> csv check
@@ -128,7 +128,7 @@ if ($can_cvt_spreadsheets) {
     }
   }
 } else {
-  warn "Spreadsheet tests skipped because soffice is not installed\n" unless $silent;
+  warn "# Spreadsheet tests skipped because soffice is not installed\n" unless $silent;
 }
 
 # Confirm that conflicting specs are caught

@@ -1,11 +1,11 @@
-Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, Spreadsheet::Edit::Log
+Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, and/or Spreadsheet::Edit::Log
 
-3.028 - Test portabilty fixes; remove white-space errors
-3.021 - Fix release mistake (wrongly required Win32API::Net on all platforms)
-3.020 - Now fully working on Windows (Strawberry perl)
-3.015->3.019: Fixing portability issues with installation tests
+1000.001 : Bumped the version to be > 999.999 to fix a $VERSION problem
+  (see https://www.perlmonks.org/?node_id=11153160)
+3.031 : Fix date format auto-detection when importing CSV
+3.015->3.030 : Fixed various portability issues, particularly for Windows
 
-3.014 - IO::convert_spreadsheet() reworked:
+3.014 : IO::convert_spreadsheet() reworked:
 
         Auto-detect CSV import column formats when possible to avoid
         corruption when converted to a spreadsheet.  Mainly this is to
@@ -22,7 +22,7 @@ Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, Spreadsheet::Edit::Log
 
         Now csv->ods->csv round trip is usually completely clean.
 
-3.010 - Clean up auto-detect of encoding and quote & separator characters
+3.010 : Clean up auto-detect of encoding and quote & separator characters
         in csv files.   It first tries the obvious: UTF-8, '"' and ",", but
         should now work automatically with \t separators.
 
@@ -42,4 +42,4 @@ Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, Spreadsheet::Edit::Log
         Separate and generalize the logging functions into
         Spreadsheet::Edit::Log .
         ---
-3.009 - Switch tests from Test::More to Test2::V0
+3.009 : Switch tests from Test::More to Test2::V0

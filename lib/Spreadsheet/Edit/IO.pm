@@ -1295,32 +1295,53 @@ sub _determine_enc_tofrom($) {
       my $fh = open_input($r2octets);
       readparse_csv($fh);
     };
+    my $max_cols = 0; for my $row (@{ $$r2rows }) { $max_cols = @$row if $max_cols < @$row }
     state $curr_yy = (localtime(time))[5];
     my @col_formats;
-    for my $row (@{ $$r2rows }) {
-      for my $i (0..$#$row) {
-        for ($row->[$i]) {
+    my sub recognized($$$$;$) {
+      my ($cx, $rx, $thing, $format, $as_msg) = @_;
+      $col_formats[$cx] = $format;
+      return unless $debug;
+      $as_msg //= " as ".vis($col_formats[$cx])." format";
+      if (length($thing) > 35) { $thing = substr($thing,0,32)."..."; }
+      @_ = ("Recognized ",$thing," in ", cxrx2sheetaddr($cx,$rx), $as_msg);
+      goto &btw
+    }
+    CX:
+    for my $cx (0..$max_cols-1) {
+      RX:
+      for my $rx (0..$#{$$r2rows}) {
+        my $row = $$r2rows->[$rx];
+        next if $cx > $#$row; # row has fewer columns than others
+        for ($row->[$cx]) {
           # recognize obvious Y/M/D or M/D/Y or D/M/Y date forms
           if (m#\b(?<y>(?:[12]\d)?\d\d)/(?<m>\d\d)/(?<d>\d\d)\b#) {
             if ($+{d} > 12 && $+{d} <= 31 && $+{m} >= 1 && $+{m} <= 12
                  && ($+{y} < 100 || $+{y} >= 1000)) {
-              $col_formats[$i] = "YY/MM/DD";
-              btw "Recognized '$_' as $col_formats[$i] format" if $debug;
-              next
+              recognized($cx,$rx,$_,"YY/MM/DD");
+              next CX;
+            }
+            # If ambiguous YYYY/??/?? we can still assume it is a date and not text
+            if (length($+{y})==4) {
+              #recognized($cx,$rx,$_,""," as some kind of date, fmt unknown");
+              next RX;
             }
           }
           if (m#\b(?<m>\d\d)/(?<d>\d\d)/(?<y>(?:[12]\d)?\d\d)\b#) {
             if ($+{y} < 100 || $+{y} >= 1000) {
               if ($+{d} > 12 && $+{d} <= 31 && $+{m} >= 1 && $+{m} <= 12) {
-                $col_formats[$i] = "MM/DD/YY";
-                btw "Recognized '$_' as $col_formats[$i] format" if $debug;
-                next
+                recognized($cx,$rx,$_,"MM/DD/YY");
+                next CX
               }
               elsif ($+{m} > 12 && $+{m} <= 31 && $+{d} >= 1 && $+{d} <= 12) {
-                $col_formats[$i] = "DD/MM/YY";
-                btw "Recognized '$_' as $col_formats[$i] format" if $debug;
-                next
+                recognized($cx,$rx,$_,"DD/MM/YY");
+                next CX
               }
+            }
+            # If ambiguous ??/??/YYYY we can still assume it is a date and not text
+            if (length($+{y})==4) {
+              #recognized($cx,$rx,$_,""," as some kind of date, fmt unknown");
+              next RX;
             }
           }
           # Things to force to be read as text fields:
@@ -1331,8 +1352,8 @@ sub _determine_enc_tofrom($) {
           #    minus then the original spreadsheet format was "text" not
           #    numeric.
           if (/^[\x{2D}0]/) {
-            $col_formats[$i] = "text";
-            btw "Recognized '$_' as $col_formats[$i] format" if $debug;
+            recognized($cx,$rx,$_,"text");
+            next CX;
           }
         }
       }

@@ -12,8 +12,9 @@ use feature qw(state lexical_subs current_sub);
 
 package Spreadsheet::Edit;
 
-# Allow "use <thismodule. VERSION ..." in development sandbox to not bomb
+# Allow "use <thismodule> <someversion>;" in development sandbox to not bomb
 { no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 998.999; }
+
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion
 # DATE from Dist::Zilla::Plugin::OurDate
 
