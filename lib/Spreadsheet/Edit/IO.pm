@@ -10,7 +10,7 @@ no warnings qw(experimental::lexical_subs);
 package Spreadsheet::Edit::IO;
 
 # Allow "use <thismodule. VERSION ..." in development sandbox to not bomb
-{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 998.999; }
+{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 1999.999; }
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion
 # DATE from Dist::Zilla::Plugin::OurDate
 
@@ -135,6 +135,7 @@ sub _get_exclusive_lock($) { # returns lock object
         $owner = _get_username($s[4])." ".$owner;
       }
       my $ownermsg = $owner ? " held by $owner" : "";
+      # Carp::longmess ...
       warn ">> ($$) Waiting for exclusive lock${ownermsg}...\n",
            "   $lockfile_path\n"
         unless $opts->{silent};

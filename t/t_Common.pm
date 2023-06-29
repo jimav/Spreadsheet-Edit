@@ -20,8 +20,8 @@ use strict; use warnings  FATAL => 'all'; use feature qw/say state/;
 
 require Exporter;
 use parent 'Exporter';
-our @EXPORT = qw/oops mytempfile mytempdir/;
-our @EXPORT_OK = ();
+our @EXPORT = qw/mytempfile mytempdir/;
+our @EXPORT_OK = qw/oops/;
 
 use Import::Into;
 use Carp;
@@ -40,7 +40,7 @@ sub import {
     # the 2nd time.
 
     # Check that the user did not already say "no warnings ..." or somesuch
-    # I was confused about how to this before,
+    # I was previously confused about how to do this,
     # see https://rt.cpan.org/Ticket/Display.html?id=147618
     my $users_warnbits = ${^WARNING_BITS}//"u";
     my $users_pragmas = ($^H//"u").":".hash2str(\%^H);
@@ -98,9 +98,11 @@ sub import {
 
   require File::Spec;
   require File::Spec::Functions;
+  # Do *not* import 'devnull' as it doesn't really work on Windows,
+  # at least not as the input to File::Copy::copy (fails with "No such file")
   File::Spec::Functions->import::into($target, qw/
     canonpath catdir catfile curdir rootdir updir
-    no_upwards file_name_is_absolute devnull tmpdir splitpath splitdir
+    no_upwards file_name_is_absolute tmpdir splitpath splitdir
     abs2rel rel2abs case_tolerant/);
 
   require Path::Tiny;

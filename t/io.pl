@@ -60,12 +60,12 @@ sub verif_Another_Sheet(;$) {
 sub doconvert(@) {
   if (@_ % 2 == 0) {
     #convert_spreadsheet(verbose => $verbose, debug => $debug, @_);
-    unshift @_, (verbose => $verbose, debug => $debug);
+    unshift @_, (verbose => $verbose, debug => $debug, silent => $silent);
     goto &convert_spreadsheet;
   } else {
     my $inpath = shift;
     #convert_spreadsheet($inpath, verbose => $verbose, debug => $debug, @_);
-    unshift @_, (verbose => $verbose, debug => $debug);
+    unshift @_, (verbose => $verbose, debug => $debug, silent => $silent);
     unshift @_, $inpath;
     goto &convert_spreadsheet;
   }
@@ -76,7 +76,7 @@ sub doread($$) {
   eq_deeply(sheet(), undef) or confess "sheet() did not return undef";
 
   eq_deeply(eval{my $dum=$num_cols},undef) or confess "num_cols unexpectedly valid";
-  read_spreadsheet {debug => $debug, verbose => $verbose, %$opts}, $inpath;
+  read_spreadsheet {debug => $debug, verbose => $verbose, silent => $silent, %$opts}, $inpath;
   confess "num_cols is not positive" unless $num_cols > 0;
 }
 

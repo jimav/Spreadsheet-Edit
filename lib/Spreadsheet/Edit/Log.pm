@@ -10,7 +10,7 @@ no warnings qw(experimental::lexical_subs);
 package Spreadsheet::Edit::Log;
 
 # Allow "use <thismodule. VERSION ..." in development sandbox to not bomb
-{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 998.999; }
+{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 1999.999; }
 # VERSION from Dist::Zilla::Plugin::OurPkgVersion
 # DATE from Dist::Zilla::Plugin::OurDate
 
