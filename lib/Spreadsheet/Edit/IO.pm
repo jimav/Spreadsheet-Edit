@@ -1024,6 +1024,7 @@ sub _convert_using_ssconvert($$$) {
 ##      remove_tree($td); mkdir($td) or die $!;
 ##      $eff_inpath = catfile($td, $opts->{sheetname});
 ##      symlink $opts->{inpath}, $eff_inpath or die $!;
+##        fixme: handle unimplmented or no-perms symlink failures
 ##    }
 ##    my @cmd = ($prog, @options, $eff_inpath, $eff_outpath);
 ##
@@ -1639,15 +1640,14 @@ sub convert_spreadsheet(@) {
       my $dest = $outpath->child( $opts{ifbase}.".csv" );
       my $inpath = $opts{inpath_sans_sheet};
       my $s = eval{ symlink($inpath, $dest) };
-      if ($@) { # symlink unimplmented
+      if ($@ or !$s) { # symlink unimplmented or insufficient permissions
         btw dvis '>> $@' if $opts{debug};
         warn "> No conversion needed! Copying into ", qsh($dest),"\n"
           if $opts{verbose};
         $opts{inpath_sans_sheet}->copy($dest);
       } else {
-        warn "> No conversion needed! Leaving symlink at ", qsh($dest),"\n"
+        warn "> No conversion needed! Left symlink at ", qsh($dest),"\n"
           if $opts{verbose};
-        croak "symlink $inpath <-- $dest : $!" unless $s;
       }
       $done = 1;
     }
