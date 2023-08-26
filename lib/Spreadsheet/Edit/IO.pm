@@ -439,13 +439,19 @@ sub _openlibre_path() {
         # https://github.com/Perl/perl5/issues/21143
         my $fullname = $File::Find::fullname;
         if (!defined($fullname) && $is_MSWin) {
-            stat($_); # lstat was not done
+            warn "# _ MSWin undef fullname! ",_Findvarsmsg() if $debug;
+            stat($_); # lstat was not done. Grr...
             $fullname = $File::Find::name;
-        }
-        unless (-d _ || -l _) {
-          warn "# _ notdir/symlink: ",_Findvarsmsg() if $debug;
-          $File::Find::prune = 1; # in case it really is
-          return;
+            unless (-d _) {
+              $File::Find::prune = 1; # in case it really is a dir
+              return;
+            }
+        } else {
+          unless (-d _ or -l _) {
+            warn "# _ notdir/symlink: ",_Findvarsmsg() if $debug;
+            $File::Find::prune = 1; # in case it really is
+            return;
+          }
         }
         if (
             !defined($fullname) # broken link, per docs
@@ -916,7 +922,7 @@ sub _convert_using_openlibre($$$) {
     foreach (@result_files) {
       my $dir  = $_->parent;  # Like dirname but including Volume:
       my $base = $_->basename;
-      (my $newbase = $base) =~ s/^$opts->{ifbase}-// or oops;
+      (my $newbase = $base) =~ s/^\Q$opts->{ifbase}\E-// or oops dvis '$base $opts';
       my $newpath = $dir->child($newbase)->canonpath;
       my $oldpath = path($_)->canonpath;
       btw ">> Renaming $oldpath -> $newbase\n" if $debug;

@@ -7,6 +7,10 @@ use t_TestCommon # Test2::V0 etc.
 use t_SSUtils qw/create_testdata/;
 use Capture::Tiny qw/capture/;
 
+BEGIN {
+  $debug = 1; ## leave debug on until MSWin problem with no-detect-clash is diagnosed
+}
+
 our ($tdata1_path, $withARGV_path, $opthash_comma);
 BEGIN{
   $tdata1_path = create_testdata(
@@ -26,9 +30,7 @@ BEGIN{
    ]
   );
 
-  #$opthash_comma = $debug ? ' {debug => 1},' : '';
-  ## ALWAYS SPEW DEBUG MSGS until we figure out the unexpected "success" on MSWin
-  $opthash_comma = ' {debug => 1},';
+  $opthash_comma = $debug ? ' {debug => 1},' : '';
 }
 
 # Still in package main
@@ -47,8 +49,13 @@ BEGIN{
   note "Err:$err\nOut:$out\n"; # if $debug;
   like($err, qr/TitleA.*clash.*Existing.*sub/s, "Detect clash with sub name",
        dvis 'ERR:$err\nOUT:$out\n');
-  is($out, "", "Clash diags on stderr, not stdout",
+  (my $filtered_out = $out) =~ s/^\d+: .*\n//gm; # remove "btw" messages
+  if ($debug) {
+    note dvis 'ERR:$err\nOUT:$out\n';
+  } else {
+    is($filtered_out, "", "Clash diags should be on stderr, not stdout",
        dvis 'ERR:$err\nOUT:$out\n');
+  }
 }
 
 { my ($out, $err) = capture {
@@ -57,7 +64,8 @@ BEGIN{
        use Spreadsheet::Edit::Preload '.$opthash_comma.vis($main::withARGV_path->stringify).';
        ');
   };
-  like($err, qr/ARGV.*clash.*Existing.*Array/s, "Detect clash with main::ARGV");
+  like($err, qr/ARGV.*clash.*Existing.*Array/s, "Detect clash with main::ARGV",
+       dvis 'ERR:$err\nOUT:$out\n')
 }
 
 package Foo::Default;
