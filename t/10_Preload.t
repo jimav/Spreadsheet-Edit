@@ -7,10 +7,6 @@ use t_TestCommon # Test2::V0 etc.
 use t_SSUtils qw/create_testdata/;
 use Capture::Tiny qw/capture/;
 
-BEGIN {
-  $debug = 1; ## leave debug on until MSWin problem with no-detect-clash is diagnosed
-}
-
 our ($tdata1_path, $withARGV_path, $opthash_comma);
 BEGIN{
   $tdata1_path = create_testdata(
