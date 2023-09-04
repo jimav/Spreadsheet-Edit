@@ -56,8 +56,8 @@ use Text::CSV ();
 # DDI 5.025 is needed for Windows-aware qsh()
 use Data::Dumper::Interp 5.025 qw/vis visq dvis dvisq ivis ivisq avis qsh qshlist u/;
 
-use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall
-                              btw oops/;
+use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall oops/,
+                           ':btw=IO${lno}:';
 our %SpreadsheetEdit_Log_Options = (
   is_public_api => sub{
      $_[1][3] =~ /(?: ::|^ )(?: [a-z][^:]* | OpenAsCsv | ConvertSpreadsheet )$/x
