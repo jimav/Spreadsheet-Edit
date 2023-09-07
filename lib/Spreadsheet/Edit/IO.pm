@@ -360,7 +360,7 @@ sub _file_fingerprint($) {
 
 # Find LibreOffice, or failing that OpenOffice
 our $OLpath_answer = $ENV{SPREADSHEET_EDIT_LOPATH};
-sub _openlibre_path() {
+sub openlibreoffice_path() {
   return $OLpath_answer if $OLpath_answer;
   unless ($ENV{SPREADSHEET_EDIT_IGNPATH}) {
     foreach my $short_name (qw(libreoffice loffice localc)) {
@@ -516,12 +516,12 @@ sub _openlibre_path() {
        || (!$ENV{SPREADSHEET_EDIT_IGNPATH} && which("soffice")) # installed OO?
        || return(undef)
      )->realpath->canonpath
-}#_openlibre_path
+}#openlibreoffice_path
 
 sub _openlibre_features() {
   state $hash;
   return $hash if defined $hash;
-  my $prog = _openlibre_path() // return(($hash={ available => 0 }));
+  my $prog = openlibreoffice_path() // return(($hash={ available => 0 }));
   my $raw_version;
   # This is gross but fast and works in recent versions of LO
   if (my $fh = eval{ path($prog)->realpath->parent->child("types/offapi.rdb")
@@ -704,7 +704,7 @@ sub _convert_using_openlibre($$$) {
   oops if $opts->{sheetname} && ! _openlibre_supports_named_sheet();
   my $debug = $opts->{debug};
 
-  my $prog = _openlibre_path() // oops;
+  my $prog = openlibreoffice_path() // oops;
 
   my $saved_UserInstallation = $ENV{UserInstallation};
   # URI format is file://server/path where 'server' is empty. "file://path" is
@@ -1953,10 +1953,26 @@ Not exported by default.
 Composes a combined string in a "preferred" format (currently "PATH!SHEETNAME").
 Not exported by default.
 
+=head1 Testing if LibreOffice etc. is Installed
+
+=head2 $bool = can_cvt_spreadsheets();
+
+=head2 $bool = sub can_extract_allsheets();
+
+=head2 $bool = can_extract_named_sheet();
+
+These feature-test functions return false if the corresponding operations
+are not possible because LibreOffice (or, someday gnumeric) is not installed
+or is an older version which does not have needed capabilities.
+
+=head2 $path = openlibreoffice_path();
+
+Returns the detected path of I<soffice> (Apache Open Office or Libre Office)
+or undef if not found.
+
 =head1 SEE ALSO
 
 L<Spreadsheet::Edit> and L<Text::CSV>
-
 
 =cut
 
