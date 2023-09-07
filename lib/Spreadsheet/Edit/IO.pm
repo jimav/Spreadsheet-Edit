@@ -22,7 +22,9 @@ our @EXPORT = qw/convert_spreadsheet OpenAsCsv cx2let let2cx cxrx2sheetaddr
                  sheetname_from_spec filepath_from_spec
                  form_spec_with_sheetname/;
 
-our @EXPORT_OK = qw/@sane_CSV_read_options @sane_CSV_write_options/;
+our @EXPORT_OK = qw/can_cvt_spreadsheets can_extract_allsheets can_extract_named_sheet
+                    openlibreoffice_path
+                    @sane_CSV_read_options @sane_CSV_write_options/;
 
 # TODO: Provide "known_attributes" function ala Text::CSV::known_attributes()
 
@@ -1969,6 +1971,8 @@ or is an older version which does not have needed capabilities.
 
 Returns the detected path of I<soffice> (Apache Open Office or Libre Office)
 or undef if not found.
+
+These are not exported by default.
 
 =head1 SEE ALSO
 
