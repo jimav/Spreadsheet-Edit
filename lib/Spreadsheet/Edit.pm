@@ -1413,19 +1413,29 @@ sub _logmethretifv { # args: [INPUTS], [OUTPUTS]
 }
 #-----------------------------------------------
 
+my $__FILE__ = __FILE__;
+my $__PACKAGE__ = __PACKAGE__;
+
 sub _call_usercode($$$) {
   my ($self, $code, $cxlist) = @_;
 
   if (@$cxlist) {
     my $row = $self->crow();
-    foreach ($row->[$cxlist->[0]]) { # bind $_ to the first-specified column
-      &$code(@$row[@$cxlist]);
+    for ($row->[$cxlist->[0]]) { # bind $_ to the first-specified column
+      eval{ &$code(@$row[@$cxlist]) };
     }
   } else {
-    $code->();
+    eval{ $code->() };
     ##Simplify backtraces
     #@_ = ();
     #goto &$code;
+  }
+  if ($@) { # filter out our internal stuff to make easier to read
+    { local $_;
+      $@ =~ s/^[^\n]* called \Kat $__FILE__ line .*?(?=\s*${__PACKAGE__}::\w*apply)/from [apply internals]/msg
+        unless $$self->{debug};
+    }
+    die "$@\n";
   }
 }
 

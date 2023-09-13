@@ -21,6 +21,7 @@ our @EXPORT = qw/fmt_call log_call fmt_methcall log_methcall
                  nearest_call abbrev_call_fn_ln_subname/;
 
 sub _btwTN($$@) {
+  local ($@, $_); # dont clobber callers variables
   my $pfx=shift; my $N=shift; local $_ = join("",@_);
   s/\n\z//s;
   my ($package, $path, $lno) = caller($N);
