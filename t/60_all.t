@@ -69,22 +69,28 @@ SKIP: {
   }
 }
 
-##### Run with --verbose #####
-# *not* with --debug so we don't see internal calls to convert_spreadsheet
-my @vdopts = ('--verbose'); # without --debug
-for my $st (@subtests) {
-  subtest_buffered with_debug => sub {
-    my @cmd = ($st, @vdopts);
-    my ($doutput, $dwstat) = capture_merged { run_subtest(@cmd) };
-    is($dwstat, 0, "zero subtest exit stat","output:\n$doutput");
-    if (! eval { verif_no_internals_mentioned($doutput) }) {
-      die "\n==================\n$doutput\n",
-          $@,"\nInternals inappropriately mentioned in output from @cmd\n ";
-    }
-    print basename($st)." @vdopts produced ".length($doutput)." characters\n";
-    print basename($st)." @vdopts : no inappropriate output detected\n";
-    done_testing();
-  };
+SKIP: {
+  skip "Skipping verbose logging checks (AUTHOR_TESTING only)"
+    if !$ENV{AUTHOR_TESTING} && !$debug && !$verbose;
+
+  ### Run with --verbose (*not* --debug) and check that no internals are mentioned
+  my @vdopts = ('--verbose'); # without --debug
+  for my $st (@subtests) {
+    subtest_buffered with_debug => sub {
+      my @cmd = ($st, @vdopts);
+      my ($doutput, $dwstat) = capture_merged { run_subtest(@cmd) };
+      is($dwstat, 0, "zero subtest exit stat","output:\n$doutput");
+      if (! eval { verif_no_internals_mentioned($doutput) }) {
+        die "\n==================\n$doutput\n",
+            $@,"\nInternals inappropriately mentioned in output from @cmd\n ";
+      }
+      print basename($st)." @vdopts produced ".length($doutput)." characters\n";
+      print basename($st)." @vdopts : no inappropriate output detected\n";
+      done_testing();
+    };
+  }
 }
+
+done_testing();
 
 exit 0;
