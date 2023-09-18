@@ -208,7 +208,7 @@ use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall oops/,
                            ':btw=SE${lno}:' ;
 
 use Data::Dumper ();
-use Data::Dumper::Interp 6.002 qw/:all/;
+use Data::Dumper::Interp 6.007 qw/:all/;
 
 use Carp;
 our @CARP_NOT = qw(Spreadsheet::Edit
