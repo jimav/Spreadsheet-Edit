@@ -40,13 +40,21 @@ if (@subtests == 0) {
   die unless @subtests >= 4;  # update this as we add more of them
 }
 
-plan tests => ($debug||$verbose) ? scalar(@subtests)+1 : scalar(@subtests) * 2;
+my $silent_skip_msg;
+$silent_skip_msg = "Skipping --silent tests because \$debug or \$verbose is true" if $debug || $verbose;
+
+my $debug_skip_msg;
+$debug_skip_msg = "Skipping verbose logging checks (AUTHOR_TESTING only)"
+  if !$ENV{AUTHOR_TESTING} && !$debug && !$verbose;
+
+plan tests => ($silent_skip_msg ? 1 : scalar(@subtests)) +
+              ($debug_skip_msg  ? 1 : scalar(@subtests));
 
 # Note: --silent --verbose etc. arguments are parsed in t_TestCommon.pm
 
 ##### Run with --silent #####
 SKIP: {
-  skip "Skipping --silent tests because \$debug or \$verbose is true" if $debug || $verbose;
+  skip $silent_skip_msg if $silent_skip_msg;
   for my $st (@subtests) {
     subtest_buffered with_silent => sub {
       my ($soutput, $swstat) = tee_merged { run_subtest($st, '--silent') };
@@ -70,10 +78,9 @@ SKIP: {
 }
 
 SKIP: {
-  skip "Skipping verbose logging checks (AUTHOR_TESTING only)"
-    if !$ENV{AUTHOR_TESTING} && !$debug && !$verbose;
+  skip $debug_skip_msg if $debug_skip_msg;
 
-  ### Run with --verbose (*not* --debug) and check that no internals are mentioned
+  # Run with --verbose (*not* --debug) and check that no internals are mentioned
   my @vdopts = ('--verbose'); # without --debug
   for my $st (@subtests) {
     subtest_buffered with_debug => sub {
