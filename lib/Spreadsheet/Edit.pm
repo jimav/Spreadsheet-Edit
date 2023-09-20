@@ -235,7 +235,7 @@ use Spreadsheet::Edit::IO qw(
    sheetname_from_spec filepath_from_spec form_spec_with_sheetname);
 
 use constant _CALLER_OVERRIDE_CHECK_OK =>
-     (defined(&Carp::CALLER_OVERRIDE_CHECK_OK) 
+     (defined(&Carp::CALLER_OVERRIDE_CHECK_OK)
       && &Carp::CALLER_OVERRIDE_CHECK_OK);
 
 # sub __mytraceback() { ... } archived in commit 482e09b6009
@@ -317,7 +317,7 @@ sub __fmt_uqlistwithqw(@) {
   }
   $s .= "/" if $barewords;
   $s
-} 
+}
 sub __fmt_uqarraywithqw(@) { "(" . &__fmt_uqlistwithqw . ")" }
 
 # Format list of pairs as "key1 => val1, key2 => val2, ..."  without parens
@@ -434,7 +434,7 @@ sub _fmt_colx(;$$) {
         push @items, $$_; # \"string" means insert "string" literally
       } else {
         # Work around old Perl lexical sub limitations...
-        my $item=$hash{$_}; 
+        my $item=$hash{$_};
           oops(dvis '$_ $specs hash=',hvis(%hash)) unless defined $item;
         additem($_, $item);
         delete $hash{$_} // oops;
@@ -476,7 +476,7 @@ sub _unindexed_title { #method for use by tests
 }
 
 # Return (normals, unindexed) where each is [title => cx, ...] sorted by cx
-sub _get_usable_titles { 
+sub _get_usable_titles {
   my $self = shift;
   my ($rows, $title_rx, $num_cols) = @$$self{qw{rows title_rx num_cols}};
   my $title_row = $rows->[$title_rx // oops];
@@ -648,7 +648,7 @@ sub __usercall_info(;$) {
       my @args;
       my $hasargs = $frame[4];
       if ($hasargs) {
-        eval{ @args = @DB::args }; 
+        eval{ @args = @DB::args };
         @args=("<perl bug(?) prevented getting args>") if $@;
       }
       return (\@frame, \@args)
@@ -674,7 +674,7 @@ sub __find_userpkg() {
   ${ __usercall_info() }[0];
 }
 
-# This always returns the caller's caller's package but also 
+# This always returns the caller's caller's package but also
 # checks that it is not an internal call, which should never happen
 sub __callerpkg() {
   my $pkg = (caller(1))[0];
@@ -689,7 +689,7 @@ sub __callerpkg() {
 # debug/verbose args are removed from the arguments passed to new()
 # and put back into the object after it is created.
 sub __silent_new(@) {
-  my $opthash = &__opthash; 
+  my $opthash = &__opthash;
   my $new_args = to_hash(@_);
 
   my %saved;
@@ -697,7 +697,7 @@ sub __silent_new(@) {
     $saved{$key} = $opthash->{$key} if exists($opthash->{$key});
     $opthash->{$key} = 0; # force off
     $saved{$key} = delete($new_args->{$key}) if exists($new_args->{$key});
-  } 
+  }
 
   my $self = Spreadsheet::Edit->new($opthash, %$new_args);
 
@@ -742,7 +742,7 @@ sub __self { # a new empty sheet is created if necessary
 
     my ($userpkg, $fn, $lno, $subname) = @{ __filter_frame($frame) };
     $opts{data_source} = "(Created implicitly by '$subname' at ${fn}:$lno)";
-    
+
     my $self = $pkg2currsheet{$userpkg} = __silent_new(\%opts);
     $self
   }
@@ -751,8 +751,8 @@ sub __self { # a new empty sheet is created if necessary
 
 ## Helpers...
 
-sub __opthash { 
-  ref($_[0]) eq "HASH" ? shift(@_) : {} 
+sub __opthash {
+  ref($_[0]) eq "HASH" ? shift(@_) : {}
 }
 sub __selfmust_opthash {
   my $self = &__selfmust;
@@ -795,15 +795,15 @@ sub __validate_opthash($$;@) {
   foreach my $k (keys %$opthash) {
     croak "Unrecognized ",($opts{desc}//"option")," '$k'"
       unless first{$_ eq $k} @$valid_keys;
-    confess "Option '$k' must be defined"
-      if $opts{undef_ok} && !defined($opthash->{$k})
-                         && !grep{$_ eq $k} @{$opts{undef_ok}};
+    confess "Option '$k' may not be 'undef'"
+      if $opts{undef_ok_only} && !defined($opthash->{$k})
+                              && !grep{$_ eq $k} @{$opts{undef_ok_only}};
   }
   $opthash
 }
 
 # Copy verbose/debug/silent options into $self, deleting them from
-# the provided options hash.  
+# the provided options hash.
 # RETURNS: Hash of original values to pass to _restore_stdopts()
 #
 # This is used by methods which accept {verbose} etc. options
@@ -910,27 +910,27 @@ sub _carponce { # if not silent
 
 # Unlike other methods, new() takes key => value pair arguments.
 # For consistency with other methods an initial {OPTIONS} hash is
-# also allowed, but it is not special in any way and is merged 
+# also allowed, but it is not special in any way and is merged
 # with any linear args (linear args override {OPTIONS}).
 
 sub new { # Strictly OO, this does not affect caller's "current sheet".
           # The corresponding functional API is new_sheet() which explicitly
           # creates a new sheet and makes it the 'current sheet'.
   my $classname = shift;
-  croak "Invalid/missing CLASSNAME (i.e. \"this\") arg" 
+  croak "Invalid/missing CLASSNAME (i.e. \"this\") arg"
     unless defined($classname) && $classname =~ /^[\w_:]+$/;
 
   my $opthash = &__opthash;
   # Special handling of {cmd_nesting) since there was no object to begin with:
-  #   Internal callers may pass this as a "user" option in {OPTARGS}; 
+  #   Internal callers may pass this as a "user" option in {OPTARGS};
   #   we won't log it, but we plant it into the object below.
   #   **THE CALLER MUST DECREMENT IT LATER IF NEEDED*
   my $cmd_nesting = delete($opthash->{cmd_nesting}) // 0;
 
   my %opts = (verbose => $Verbose, debug => $Debug, silent => $Silent,
-              %$opthash, 
+              %$opthash,
               __validate_pairs(@_));
-  
+
   my $self;
   if (my $clonee = delete $opts{clone}) { # untested as of 2/12/14
     delete @opts{qw/verbose debug silent/};
@@ -1155,11 +1155,11 @@ COLSPEC '$ident' clashes with an existing object in package '$p' .
     explicitly declare the tied variables, and they must be tied and
     imported before the compiler sees them.
 
-    Note: The clash might not be with a scalar \$$ident, but something else 
-    named '${ident}' in the same package (array, hash, sub, filehandle, 
+    Note: The clash might not be with a scalar \$$ident, but something else
+    named '${ident}' in the same package (array, hash, sub, filehandle,
     etc.) Unfortunately it is not possible to distinguish a non-existent
     scalar from a declared scalar containing an undef value
-    (see *foo{SCALAR} in 'man perlref').  Therefore, to be safe, 
+    (see *foo{SCALAR} in 'man perlref').  Therefore, to be safe,
     nothing is allowed to pre-exist with the name '${ident}'.
 EOF
           # We can detect anything other than an undef scalar
@@ -1283,7 +1283,7 @@ sub tie_column_vars(;@) {
   my $r = $self->_tie_col_vars($pkg, $parms, @varnames);
 
   my $pfx = ($r == __TCV_REDUNDANT ? "[ALL REDUNDANT] " : "");
-  log_methcall $self, [\$pfx, \__fmt_uqarraywithqw(keys %tokens, @varnames), 
+  log_methcall $self, [\$pfx, \__fmt_uqarraywithqw(keys %tokens, @varnames),
                        \" in package $pkg"]
     if $$self->{verbose};
 }#tie_column_vars
@@ -1744,7 +1744,7 @@ sub alias(@) {
 
     if (my $wheredefined = $useraliases->{$ident}) {
       croak "'$ident' is already a user-defined alias",
-            " for cx ", scalar($self->_spec2cx($ident)), 
+            " for cx ", scalar($self->_spec2cx($ident)),
             " defined at ", $wheredefined, "\n"
             #" (for cx ", scalar($self->_spec2cx($ident)), ")"
     }
@@ -1824,7 +1824,7 @@ sub title_rx(;$@) {
   __validate_opthash( $opthash,
                       [qw(required min_rx max_rx first_cx last_cx)],
                       desc => "autodetect option",
-                      undef_ok => [] );
+                      undef_ok_only => [qw/verbose silent debug/] );
   my $rx = -999;
   if (@_ == 0) {
     # A return value was requested
@@ -1899,7 +1899,7 @@ sub _autodetect_title_rx {
   my $detected;
   unless (@nd_reasons) {
     # no logging  during trial and error (except with debug)
-    local $$self->{verbose} = $debug; 
+    local $$self->{verbose} = $debug;
     local $$self->{silent}  = !$debug;
     RX: for my $rx ($min_rx .. $max_rx) {
       warn "#   ",$nd_reasons[-1],"\n" if $debug && @nd_reasons;
@@ -2131,7 +2131,7 @@ sub _set_verbose_debug_silent(@) {
   foreach (pairs @_) {
     my ($key, $val) = @$_;
     my $oldval = $$self->{$key};
-    next 
+    next
       unless !!$oldval != !!$val;
     if ($key eq "silent") {
       $$self->{$key} = $val;
@@ -2167,7 +2167,7 @@ sub options(@) {
   my $self = &__self; # auto-create sheet if necessary
   my @old = map{ exists($$self->{$_}) ? ($_ => $$self->{$_}) : () }
                qw/verbose debug silent/;
-  
+
   my %eff_args;
   if (@_ == 0) {
     croak "(list) returned but called in scalar or void context"
@@ -2574,7 +2574,8 @@ sub read_spreadsheet($;@) {
       qw/required min_rx max_rx first_cx last_cx/, # for title_rx
                       ],
       desc => "read_spreadsheet option",
-      undef_ok => [qw/title_rx verbose silent debug use_gnumeric/] );
+      undef_ok_only => [qw/title_rx iolayers encoding verbose silent debug
+                           use_gnumeric/] );
 
   # convert {encoding} to {iolayers}
   if (my $enc = delete $opthash->{encoding}) {
@@ -2639,24 +2640,24 @@ sub read_spreadsheet($;@) {
   }
   close $fh || croak "Error reading $hash->{csvpath}: $!\n";
 
-  $$self->{data_source} = 
+  $$self->{data_source} =
     form_spec_with_sheetname($hash->{inpath}, $hash->{sheetname});
   $$self->{sheetname} = $hash->{sheetname}; # possibly undef
 
   $self->_rows_replaced;
 
-  # Set title_rx, either to a value explicitly given in OPTIONS (possibly 
+  # Set title_rx, either to a value explicitly given in OPTIONS (possibly
   # undef, meaning no titles) or else auto-detect.
   my %autodetect_opts;
   foreach (qw/required min_rx max_rx first_cx last_cx/) {
     $autodetect_opts{$_} = $opthash->{$_} if exists($opthash->{$_});
   }
-                          
+
   my $arg = exists($opthash->{title_rx}) ? $opthash->{title_rx} : 'auto';
   { local $$self->{cmd_nesting} = $$self->{cmd_nesting} + 1;
     $autodetect_opts{verbose} = 0; # suppress logging
     $self->title_rx(\%autodetect_opts, $arg);
-  } 
+  }
 
   log_methcall $self, [$orig_opthash, $inpath,
                        \" [title_rx set to ",vis($$self->{title_rx}),\"]"]
@@ -2926,7 +2927,7 @@ sub sheet(;$$) {
 
     log_call [$opthash, \(" ".fmt_sheet($new)),
                         \(u($curr) eq u($new)
-                           ? " [no change]" 
+                           ? " [no change]"
                            : " [previous: ".fmt_sheet($curr)."]"),
                         \$pkgmsg]
       if $verbose;
@@ -3271,7 +3272,7 @@ named the same).
 =back
 
 Columns may be referenced by title without knowing their absolute positions.
-Optionally global (package) variables may be tied to columns.  
+Optionally global (package) variables may be tied to columns.
 Tabular data can come
 from Spreadsheets, CSV files, or your code, and be written similarly.
 Both Functional and Object-Oriented (OO) APIs are provided.
@@ -3384,7 +3385,7 @@ Auto-detection options:
 =back
 
 The first row is used which includes the C<required> title(s), if any,
-and has non-empty titles in all columns, or columns 
+and has non-empty titles in all columns, or columns
 C<first_cx> through C<last_cx>.
 
 =over 2
@@ -3618,9 +3619,9 @@ rows inserted after the currently-being-visited row will be visited
 at the proper time.
 
 Nested and recursive C<apply>s are allowed.
-When an 'apply' changes the 'current sheet', 
+When an 'apply' changes the 'current sheet',
 tied variables then refer to the other sheet and
-any C<apply> active for that sheet.  
+any C<apply> active for that sheet.
 With nested 'apply's, take care restore the original sheet before returning
 (perhaps using C<Guard::scope_guard>).
 
@@ -4164,7 +4165,7 @@ L<Spreadsheet::Edit::Preload>
 Some vestigial support for formats remains from an earlier implementation,
 but this support is likely to be entirely replaced at some point.
 
-Reading a spreadsheet (but not csv) may fail if I<Libre Office> 
+Reading a spreadsheet (but not csv) may fail if I<Libre Office>
 or I<Open Office> are currently running for any purpose; this seems to be
 a bug or limitation where batch-mode operations share the same profile as
 interactive sessions.   In any case, I<ssconvert> (gnumeric) will be used
@@ -4182,7 +4183,7 @@ Unknown, and probably not worth the trouble to find out.
 
 =item Add format-processing support.
 
-=item Add "column-major" views. 
+=item Add "column-major" views.
 
 This would allow accessing a whole column as an array.
 Perhaps C<@cols> and C<%cols> would be sets of column arrays
@@ -4193,7 +4194,7 @@ And C<tie_column_vars '@NAME'> would tie user array variables to columns.
 
 =head1 AUTHOR
 
-Jim Avera (jim.avera at gmail)  
+Jim Avera (jim.avera at gmail)
 
 =head1 LICENSE
 

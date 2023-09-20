@@ -1680,7 +1680,8 @@ sub convert_spreadsheet(@) {
   $result;
 }#convert_spreadsheet
 
-# Open as a CSV, intuiting input encoding, converting spreadsheet if necessary.
+# Open as a CSV, intuiting input encoding, converting from spreadsheet if
+# necessary.
 #
 # :crlf translation is enabled on the resulting file handle, which converts
 # DOS CR,LF to \n while passing *nix bare LF through unmolested.
@@ -1955,15 +1956,15 @@ Not exported by default.
 Composes a combined string in a "preferred" format (currently "PATH!SHEETNAME").
 Not exported by default.
 
-=head1 Testing if LibreOffice etc. is Installed
+=head1 Feature Test Functions
 
 =head2 $bool = can_cvt_spreadsheets();
 
-=head2 $bool = sub can_extract_allsheets();
+=head2 $bool = can_extract_allsheets();
 
 =head2 $bool = can_extract_named_sheet();
 
-These feature-test functions return false if the corresponding operations
+These functions return false if the corresponding operations
 are not possible because LibreOffice (or, someday gnumeric) is not installed
 or is an older version which does not have needed capabilities.
 
