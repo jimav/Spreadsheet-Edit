@@ -2708,13 +2708,13 @@ sub write_csv(*;@) {
 
   my $fh;
   if (openhandle($dest)) { # an already-open file handle?
-    log_methcall $self, [$opts, \("<file handle specified> $opts->{iolayers} "
-                                .scalar(@$rows)." rows, $num_cols columns)")]
+    log_methcall $self, [$opts, "<file handle specified> $opts->{iolayers} "
+                                .scalar(@$rows)." rows, $num_cols columns)"]
       if $$self->{verbose};
     $fh = $dest;
   } else {
-    log_methcall $self, [$opts, \($dest." $opts->{iolayers} ("
-                               .scalar(@$rows)." rows, $num_cols columns)")]
+    log_methcall $self, [$opts, $dest." $opts->{iolayers} ("
+                               .scalar(@$rows)." rows, $num_cols columns)"]
       if $$self->{verbose};
     croak "Output path suffix must be *.csv, not\n  ",qsh($dest),"\n"
       if $dest =~ /\.([a-z]*)$/ && lc($1) ne "csv";
