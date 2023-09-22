@@ -765,6 +765,12 @@ foreach my $trx_val (0,1,undef,$#rows) {
     check_both('ABCDEFGHIJKLMNO');
     apply_torx { bug unless $Gtitle eq "G$rx" } 3;
 
+    # Check that clash with existing is diagnosed
+    eval { insert_cols '>$', qw(Otitle) }; verif_eval_err(qr/clash/);
+
+    # Check that non-unique new titles are detected
+    eval { insert_cols '>$', qw(Foo Foo) }; verif_eval_err(qr/more than once/);
+
 # only_cols
 
     only_cols qw(A B C D E F G Z I J K L M N O);   # (no-op)

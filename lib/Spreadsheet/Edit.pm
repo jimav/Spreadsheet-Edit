@@ -2002,16 +2002,29 @@ sub move_col($$) { goto &move_cols; }
 sub insert_cols($@) {
   my $self = &__selfmust;
   my ($posn, @new_titles) = @_;
-  my ($num_cols, $rows, $title_rx) = @$$self{qw/num_cols rows title_rx/};
+  my ($num_cols, $colx, $rows, $title_rx)
+       = @$$self{qw/num_cols colx rows title_rx/};
 
   my $to_cx = $self->_relspec2cx($posn);
 
   $self->_logmethifv(\__fmt_colspec_cx($posn,$to_cx), \" <-- ", \avis(@new_titles));
 
   @new_titles = map { $_ // "" } @new_titles; # change undef to ""
-  my $have_new_titles = first { $_ ne "" } @new_titles;
-  if (!defined($title_rx) && $have_new_titles) {
-    croak "insert_cols: Can not specify non-undef titles if title_rx is not defined\n"
+  if (first { $_ ne "" } @new_titles) {
+    croak "insert_cols: Can not specify titles unless title_rx is defined\n"
+      unless defined $title_rx;
+    my $title_row = $rows->[$title_rx];
+    my %seen;
+    foreach my $ntitle (@new_titles) {
+      croak "New title '$ntitle' specified more than once!" if $seen{$ntitle}++;
+      my $ex_rx = $colx->{$ntitle}; # for now can't clash with ABC codes
+      croak "insert_cols: New title '$ntitle' clashes with rx $ex_rx"
+        if defined $ex_rx;
+    }
+  } else {
+    # NO. Allow new columns without a title
+    #croak "You must specify non-undef titles if title_rx is defined\n"
+    #  if defined $title_rx;
   }
   my $num_insert_cols = @new_titles;
 
@@ -2026,7 +2039,7 @@ sub insert_cols($@) {
 
   $self->_adjust_colx(
     [ 0..$to_cx-1, ((undef) x $num_insert_cols), $to_cx..$num_cols-1 ]
-  );
+  ); #calls _rebuild_colx();
 
   __first_ifnot_wantarray( $to_cx .. $to_cx+$num_insert_cols-1 )
 }
@@ -3765,6 +3778,7 @@ a new spreadsheet.
 
 =item col_formats => [ LIST ]
 
+REQUIRED OPTION.
 EXPERIMENTAL, likely to change when Spreadsheet::Read is integrated!
 
 Elements of LIST may be "" (Standard), "Text", "MM/DD/YY", "DD/MM/YY", or
