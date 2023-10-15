@@ -1158,6 +1158,8 @@ sub _process_args($;@) {
     $opts{inpath_sans_sheet} = path(
       ($key && $key eq 'inpath') ? $path_sans_sheet : $opts{inpath}
     );
+    croak qsh($opts{inpath_sans_sheet})," does not exist!\n"
+      unless $opts{inpath_sans_sheet}->exists;
   }
   # Input file basename sans any .suffix
   $opts{ifbase} = $opts{inpath_sans_sheet}->basename(qr/\.[^.]+/);

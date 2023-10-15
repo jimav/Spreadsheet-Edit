@@ -29,7 +29,7 @@ sub _btwTN($$@) {
   (my $pkg = $package) =~ s/.*:://;
   my $s = eval "\"${pfxexpr}\"";
   confess "ERROR IN btw prefix '$pfxexpr': $@" if $@;
-  printf "%s %s\n", $s, $_;
+  printf STDERR "%s %s\n", $s, $_;
 }
 
 sub _genbtw_funcs($$) {
@@ -51,8 +51,8 @@ sub import {
   foreach (@_) {
     local $_ = $_; # mutable copy
     # Generate customized version of btwN() (called by btw) which uses an
-    # arbitrary prefix expression.  The expression is eval'd each time, referencing
-    # variables $path $fname $lno $package .
+    # arbitrary prefix expression.  The expression is eval'd each time,
+    # referencing variables $path $fname $lno $package .
     if (/:btwN=(.*)/) {
       warn ":btwN is deprecated,\njust use :btw=... and both btw() and btwN() will be generated\n";
       $_ = ":btw=$1";

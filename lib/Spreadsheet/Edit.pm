@@ -1666,7 +1666,8 @@ sub _specs2cxdesclist {
       }
       next
     }
-    croak "Invalid column specifier '${spec}'\nnum_cols=$num_cols. Valid keys are:\n",
+    croak "'${spec}' matches no column in ",
+          $self->data_source(), "\nnum_cols=$num_cols. Valid keys are:\n",
           $self->_fmt_colx;
   }
   oops unless wantarray;
@@ -2988,8 +2989,8 @@ sub _cellref {
 
   if (! defined $cx) {
     exists($colx->{$key})
-      or croak "'$key' is an unknown COLSPEC.  The valid keys are:\n",
-               $sheet->_fmt_colx();
+      or croak "'$key' is an unknown COLSPEC in ",$sheet->data_source(),
+               "\nThe valid keys are:\n", $sheet->_fmt_colx();
     # Undef colx results from alias({optional => TRUE},...) which failed,
     # or from an alias which became invalid because the column was deleted.
       croak "Attempt to write to 'optional' alias '$key' which is currently NOT DEFINED"
