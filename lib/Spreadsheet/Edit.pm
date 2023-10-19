@@ -1665,7 +1665,8 @@ sub _specs2cxdesclist {
       }
       if (! $matched) {
         croak "\n--- Title Row (rx $title_rx) ---\n",
-               vis($title_row),"\n-----------------\n",
+                   # Force evaluation of magicrow as an array ref
+                   vis([ @$title_row ]),"\n-----------------\n",
                "Regex $spec\n",
                "does not match any of the titles (see above) in '",
                fmt_sheet($self),"'\n"
@@ -2908,7 +2909,7 @@ use parent 'Tie::Array';
 use Carp;
 #our @CARP_NOT = qw(Tie::Indirect Tie::Indirect::Array
 #                   Tie::Indirect::Hash Tie::Indirect::Scalar);
-use Data::Dumper::Interp 6.004 qw/visnew
+use Data::Dumper::Interp 6.009 qw/visnew
                     vis  viso  avis  alvis  ivis  dvis  hvis  hlvis
                     visq visoq avisq alvisq ivisq dvisq hvisq hlvisq
                     addrvis rvis rvisq u quotekey qsh qshlist qshpath/;
