@@ -536,17 +536,20 @@ sub new_sheet(@) {
 #   prefixed with a description of a "focus" sheet and optionally
 #   a specific row.  A final \n is appended if needed.
 #
+#   An optional initial {OPTHASH} argument may contain
+#     package => <packagename>
+#
 # The "focus" sheet and row, if any, are determined as follows:
 #
-#   If the first argument is a sheet object, [sheet_object],
-#   [sheet_object, rx], or [sheet_object, undef] then the indicated
-#   sheet and (optionally) row are used.  Note that if called as a method
-#   the first arg will be the sheet object.
+#   If the first argument (after {OPTHASH}, if present) is a sheet
+#   object, [sheet_object], [sheet_object, rx], or [sheet_object, undef]
+#   then the indicated sheet and (optionally) row are used.
+#   Note that if called as a method the first arg will be the sheet object.
 #
 #   Otherwise the first arg is not special and is included in the message.
 #
-#   If no sheet is identified above, then the caller's package active
-#   sheet is used, if any.
+#   If no sheet is identified above, then the caller's package
+#   (or the package specified in {OPTHASH}) active sheet is used, if any.
 #
 #   If still no sheet is identified, then the sheet of the innermost apply
 #   currently executing (anywhere up the stack) is used, if any; this sheet
@@ -579,6 +582,10 @@ sub _default_pfx_gen($$) {
   ($sheet->sheetname() || $sheet->data_source())
 }
 sub logmsg(@) {
+  my %opts = %{ &__opthash };
+  my $package = delete $opts{package};
+  carp dvis 'Option other than "package" in {OPTHASH} passed to logmsg()'
+    if keys %opts; # really necessary?
   my ($sheet, $rx);
   if (@_ > 0 && ref($_[0])) {
     if (ref($_[0]) =~ /^Spreadsheet::Edit\b/) {
@@ -592,7 +599,7 @@ sub logmsg(@) {
   }
   my $msgstr = join("", grep{defined} @_);
   if (! defined $sheet) {
-    $sheet = $pkg2currsheet{scalar(caller)};
+    $sheet = $pkg2currsheet{$package // scalar(caller)};
   }
   if (! defined $sheet) {
     $sheet = $Spreadsheet::Edit::_inner_apply_sheet;

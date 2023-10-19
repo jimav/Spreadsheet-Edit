@@ -65,6 +65,22 @@ my $sheet2 = new_sheet
   ] ;
 title_rx 0;
 
+package Other::Pkg;
+
+use Spreadsheet::Edit qw/:all/;
+
+our $op_ds = "OtherPkgSheet";
+our $op_sheet = new_sheet
+  data_source => $op_ds,
+  rows => [
+    [ "Slimy", "Salami"],
+    [ "RRR", 321 ],
+    [ "SSS", 654 ],
+  ] ;
+title_rx 0;
+
+package main;
+
 sheet $sheet1;
 
 #while (my ($k,$v) = each %Spreadsheet::Edit::pkg2currsheet) {
@@ -92,12 +108,14 @@ sub run_tests(@) {
   my $outerasheet = delete $opts{outerasheet};
   my $oas_tag     = delete $opts{oas_tag};
   my $oas_rx      = delete $opts{oas_rx};
+  my $package     = delete $opts{package};
   confess dvis 'Unknown %opts' if %opts;
   local $Data::Dumper::Interp::Useqq = "unicode"; # with '\n' for newline etc.
+  my @optarg = $package ? ({package => $package},) : ();
   foreach ([], ["Arg1"], ["Two\nlines"], ["Arg1","Two\nlines"]) {
     my @uargs = @$_;
     my $expmsg = join("", @uargs)."\n";
-    my $justargs = join(",", map{vis} @uargs);
+    my $justargs = join(",", map{vis} @optarg,@uargs);
     my $comargs = join(",", "", map{vis} @uargs); # with leading comma
     #diag dvis '### @uargs $expmsg\n';
     # First, test logmsg() with NO explicit 'focus' argument
@@ -114,39 +132,39 @@ sub run_tests(@) {
     if ($imp_sheet) {
       # diag "### asheet=", u($asheet), "  outerasheet=", u($outerasheet), "  curr_sheet=", u($curr_sheet), "  imp_sheet=", u($imp_sheet), "\n";
       if (defined $imp_rx) {
-        is( logmsg(@uargs),
+        is( logmsg(@optarg,@uargs),
             "(Row ".($imp_rx+1)." $imp_tag): $expmsg",
             "logmsg $justargs ($imp_desc implied)($tname, auto-newline)" );
-        is( logmsg(@uargs,"\n"),
+        is( logmsg(@optarg,@uargs,"\n"),
             "(Row ".($imp_rx+1)." $imp_tag): $expmsg",
             "logmsg $justargs ($imp_desc implied)($tname, final \\n-only arg)" );
         unless (@uargs == 0) {
-          is( logmsg(@uargs[0..($#uargs-1)],$uargs[-1]."\n"),
+          is( logmsg(@optarg,@uargs[0..($#uargs-1)],$uargs[-1]."\n"),
               "(Row ".($imp_rx+1)." $imp_tag): $expmsg",
               "logmsg $justargs\\n ($imp_desc implied)($tname, final newline in last arg)"
             );
         }
       } else {
-        is( logmsg(@uargs),
+        is( logmsg(@optarg,@uargs),
             "($imp_tag): $expmsg",
             "logmsg $justargs ($imp_desc implied, no rx)($tname, auto-newline)" );
-        is( logmsg(@uargs,"\n"),
+        is( logmsg(@optarg,@uargs,"\n"),
             "($imp_tag): $expmsg",
             "logmsg $justargs ($imp_desc implied, no rx)($tname, final \\n-only arg)" );
         unless (@uargs == 0) {
-          is( logmsg(@uargs[0..($#uargs-1)],$uargs[-1]."\n"),
+          is( logmsg(@optarg,@uargs[0..($#uargs-1)],$uargs[-1]."\n"),
               "($imp_tag): $expmsg",
               "logmsg $justargs\\n ($imp_desc implied, no rx)($tname, final newline in last arg)"
             );
         }
       }
     } else {
-      is( logmsg(@uargs), $expmsg,
+      is( logmsg(@optarg,@uargs), $expmsg,
           "logmsg $justargs (no relevant sheet)($tname, auto-newline)" );
-      is( logmsg(@uargs,"\n"), $expmsg,
+      is( logmsg(@optarg,@uargs,"\n"), $expmsg,
           "logmsg $justargs (no relevant sheet)($tname, final \\n-only arg)" );
       unless (@uargs == 0) {
-        is( logmsg(@uargs[0..($#uargs-1)],$uargs[-1]."\n"), $expmsg,
+        is( logmsg(@optarg,@uargs[0..($#uargs-1)],$uargs[-1]."\n"), $expmsg,
             "logmsg $comargs\\n (no relevant sheet)($tname, final newline in last arg)" );
       }
     }
@@ -217,6 +235,13 @@ apply_torx {
   run_tests tname => "in apply but curr changed",
             asheet => $sheet1, as_tag => $ds1, as_rx => $sheet1->rx(),
             curr_sheet => $sheet2, cs_tag => $ds2, cs_rx => undef;
+
+  run_tests tname => "in apply but passing package => Other::Pkg",
+            asheet => $sheet1, as_tag => $ds1, as_rx => $sheet1->rx(),
+            curr_sheet => $Other::Pkg::op_sheet, cs_tag => $Other::Pkg::op_ds, cs_rx => undef,
+            package => "Other::Pkg"
+            ;
+
   sheet($saved);
 } [2];
 
