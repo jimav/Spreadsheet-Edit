@@ -1760,7 +1760,7 @@ sub alias(@) {
     my $cx = eval{ $self->_spec2cx($spec) };
     unless(defined $cx) {
       oops unless $@;
-      croak $@ unless $opthash->{optional} && $@ =~ /does not match/is;
+      die $@ unless $opthash->{optional} && $@ =~ /does not match/is;
       # Always throw on other errors, e.g. regex matches more than one title
     };
 
