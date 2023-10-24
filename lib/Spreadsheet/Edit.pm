@@ -431,6 +431,7 @@ sub _fmt_colx(;$$) {
     }
     foreach (@$specs) {
       if (ref $_) {
+        flush();
         push @items, $$_; # \"string" means insert "string" literally
       } else {
         # Work around old Perl lexical sub limitations...
@@ -445,7 +446,8 @@ sub _fmt_colx(;$$) {
     @items
   }
   my @ABCs    = subset [ map{ my $A = cx2let($_);
-                              u($hash{$A}) eq $_ ? $A : \"  "
+                              #u($hash{$A}) eq $_ ? $A : \"  "
+                              u($hash{$A}) eq $_ ? $A : \"<$A masked>"
                             } 0..$num_cols-1 ];
 
   # More lexical sub bug work-arounds...
