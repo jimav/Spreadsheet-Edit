@@ -583,7 +583,7 @@ sub new_sheet(@) {
 sub _default_pfx_gen($$) {
   my ($sheet, $rx) = @_;
   confess "bug" unless ref($sheet) =~ /^Spreadsheet::Edit\b/;
-  ($sheet->sheetname() || $sheet->data_source())
+  ($$sheet->{sheetname} || $$sheet->{data_source})
 }
 sub logmsg(@) {
   my %opts = %{ &__opthash };
@@ -1401,7 +1401,7 @@ sub fmt_sheet($) {
   return "undef" unless defined($sheet);
   #oops unless ref($sheet) ne "" && $sheet->isa(__PACKAGE__);
   local $$sheet->{verbose} = 0;
-  my $desc = $sheet->sheetname() || $sheet->data_source() || "no data_source";
+  my $desc = $$sheet->{sheetname} || $$sheet->{data_source} || "no data_source";
   if (length($desc) > $trunclen) { $desc = substr($desc,($trunclen-3))."..." }
   my $r = addrvis($sheet)."($desc)";
   $r
@@ -1678,8 +1678,8 @@ sub _specs2cxdesclist {
       }
       next
     }
-    croak "'${spec}' matches no column in ",
-          $self->data_source(), "\nnum_cols=$num_cols. Valid keys are:\n",
+    croak "'${spec}' matches no column in $$self->{data_source}\n",
+          "num_cols=$num_cols. Valid keys are:\n",
           $self->_fmt_colx;
   }
   oops unless wantarray;
@@ -2831,6 +2831,7 @@ sub _onlyinapply {
         if defined($pkg) && $pkg->isa("Data::Dumper") # perldoc UNIVERSAL
     }
     croak "Can't use $accessor now: Not during apply*\n"
+    #confess "Can't use $accessor now: Not during apply*\n"
   }
   $self
 }
@@ -3003,7 +3004,7 @@ sub _cellref {
 
   if (! defined $cx) {
     exists($colx->{$key})
-      or croak "'$key' is an unknown COLSPEC in ",$sheet->data_source(),
+      or croak "'$key' is an unknown COLSPEC in ",$$sheet->{data_source},
                "\nThe valid keys are:\n", $sheet->_fmt_colx();
     # Undef colx results from alias({optional => TRUE},...) which failed,
     # or from an alias which became invalid because the column was deleted.

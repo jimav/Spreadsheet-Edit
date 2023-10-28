@@ -88,13 +88,15 @@ SKIP: {
       my ($doutput, $dwstat) = capture_merged { run_subtest(@cmd) };
       is($dwstat, 0, "zero subtest exit stat","output:\n$doutput");
 
-      # Filter out logging fromfrom  sheet() command which accepts or returns a Spreadsheet::Edit object
-      $doutput =~ s/\b(sheet\s* (?:\{[^\}\n]*\}\s*)? (?:\(\)\s*==\>\s*)? )Spreadsheet::Edit(\<)/${1}Spreadsheet-Edit${2}/xgs;
-      # ...and maybe shows the previous one
-      $doutput =~ s/\b(sheet\s[^\n]+\[previous: *)Spreadsheet::Edit(\<)/${1}Spreadsheet-Edit${2}/gs;
-      # And from logging "Something = vis(sheetobject)" e.g. Othersheet in basic.pl
-      $doutput =~ s/^(\w+\s*=\s*)Spreadsheet::Edit([^:])/<<${1}>>Spreadsheet-Edit{{${2}}}/gs;
-      oops dvis '$doutput' if $doutput =~ /Spreadsheet::Edit/s;
+#Unnecessary now that verif_no_internals_mentioned is fixed to ignore Data::Dump::Interp Refaddr() displays
+#      # Filter out logging fromfrom  sheet() command which accepts or returns a Spreadsheet::Edit object
+#      # and maybe shows the previous one
+#      $doutput =~ s/\b(sheet\s* (?:\{[^\}\n]*\}\s*)?)Spreadsheet::Edit(\<)/${1}Spreadsheet-Edit${2}/xgs;
+#      $doutput =~ s/\b(sheet\s* [^\n]+==\>\s*)Spreadsheet::Edit(\<)/${1}Spreadsheet-Edit${2}/xgs;
+#      $doutput =~ s/\b(sheet\s[^\n]+\[previous: *)Spreadsheet::Edit(\<)/${1}Spreadsheet-Edit${2}/gs;
+#      # And from logging "Something = vis(sheetobject)" e.g. Othersheet in basic.pl
+#      $doutput =~ s/^(\w+\s*=\s*)Spreadsheet::Edit([^:])/<<${1}>>Spreadsheet-Edit{{${2}}}/gs;
+#      oops dvis '$doutput' if $doutput =~ /Spreadsheet::Edit/s;
 
       if (! eval { verif_no_internals_mentioned($doutput) }) {
         die "\n==================\n$doutput\n",
