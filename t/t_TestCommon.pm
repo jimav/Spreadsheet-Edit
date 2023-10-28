@@ -575,8 +575,8 @@ sub mycheckeq_literal($$$) {
                           .($vposn > 0 ? "(line ".($vposn+1).")\n" : "\n")
         ." at line ", (caller(0))[2]."\n"
        ) ;
-  #goto &Carp::confess;
-  Carp::confess(@_);
+  goto &Carp::confess;
+  #Carp::confess(@_);
 }
 sub expect1($$) {
   @_ = ("", @_);
