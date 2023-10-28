@@ -488,12 +488,14 @@ sub _get_usable_titles {
   for my $cx (0 .. $num_cols-1) {
     my $title = $title_row->[$cx];
     next if $title eq "";
-    if ($seen{$title}++) {
-      $self->_carponce("Warning: Non-unique title ", visq($title), " will not be usable for COLSPEC\n") unless $$self->{silent};
+    if (exists $seen{$title}) {
+      $self->_carponce("Warning: Non-unique title ", visq($title), " will not be usable for COLSPEC\n",
+        "(Col ",cx2let($seen{$title})," and ",cx2let($cx),")\n") unless $$self->{silent};
       @normals = grep{ $_->[0] ne $title } @normals;
       @unindexed = grep{ $_->[0] ne $title } @unindexed;
       next;
     }
+    $seen{$title} = $cx;
     if (__unindexed_title($title, $num_cols)) {
       push @unindexed, [$title, $cx];
     } else {

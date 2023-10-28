@@ -10,7 +10,7 @@ use Data::Dumper::Interp qw/vis visq dvis dvisq u visnew/;
 
 use Spreadsheet::Edit qw/:all logmsg/;
 
-use Spreadsheet::Edit::Log ':btw=L=${lno} F=${fname} P=${pkg} ::';
+use Spreadsheet::Edit::Log ':btw=L=${lno} F=${fname} P=${pkg}';
 
 use File::Basename qw/basename/;
 use Capture::Tiny qw/capture/;
@@ -33,13 +33,13 @@ sub wrapper($@) {
   local $_ = $out.$err;  # don't care which it goes to
   #note "OUT:$out\nERR:$err";
   my $fname = basename(__FILE__);
-  like($_, qr/^\s*L=(\d+) F=\Q$fname\E P=Foo :: A1 .* from line (\1)/m,
+  like($_, qr/^\s*L=(\d+) F=\Q$fname\E P=Foo: A1 .* from line (\1)/m,
       "A1 btw with custom prefix");
-  like($_, qr/^\s*L=(\d+) F=\Q$fname\E P=main :: A2 .* from line (\1)/m,
+  like($_, qr/^\s*L=(\d+) F=\Q$fname\E P=main: A2 .* from line (\1)/m,
       "A2 btw with custom prefix");
-  like($_, qr/^\s*L=(\d+) F=\Q$fname\E P=main :: BB btwN\(0...\) from line (\1)/m,
+  like($_, qr/^\s*L=(\d+) F=\Q$fname\E P=main: BB btwN\(0...\) from line (\1)/m,
       "BB btwN(0,...) with custom prefix");
-  like($_, qr/^\s*L=(\d+) F=\Q$fname\E P=main :: CC btwN\(1,...\) from line (\1)/m,
+  like($_, qr/^\s*L=(\d+) F=\Q$fname\E P=main: CC btwN\(1,...\) from line (\1)/m,
       "CC btwN(1,...) with custom prefix");
 }
 
