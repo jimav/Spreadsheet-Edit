@@ -2880,6 +2880,7 @@ sub sheet(;$$) {
   my $pkg = $opthash->{package} // caller();
   oops if index($pkg,__PACKAGE__) >= 0; # not us or sub-pkg
   my $pkgmsg = $opthash->{package} ? " [for pkg $pkg]" : "";
+  my @opthash_unless_empty = ( keys(%$opthash) ? ($opthash) : () );
   my $curr = $pkg2currsheet{$pkg};
   my $verbose = $opthash->{verbose} || ($curr && $$curr->{verbose});
   if (@_) {
@@ -2890,7 +2891,8 @@ sub sheet(;$$) {
       $verbose ||= $$new->{verbose};
     }
 
-    log_call [$opthash, \(" ".fmt_sheet($new)),
+    log_call [@opthash_unless_empty,
+                        \(" ".fmt_sheet($new)),
                         \(u($curr) eq u($new)
                            ? " [no change]"
                            : " [previous: ".fmt_sheet($curr)."]"),
@@ -2899,7 +2901,7 @@ sub sheet(;$$) {
 
     $pkg2currsheet{$pkg} = $new;
   } else {
-    log_call [$opthash], [\fmt_sheet($curr), \$pkgmsg]
+    log_call [@opthash_unless_empty], [\fmt_sheet($curr), \$pkgmsg]
       if $verbose;
   }
   $curr
