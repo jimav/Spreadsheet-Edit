@@ -54,6 +54,9 @@ package Other {
 
 use Spreadsheet::Edit ':all';
 
+# Use to not prefix rows with "(Spreadsheet::Edit::Magicrow)"
+my $myvisobj = visnew->Objects({objects => 1, show_overloaded_classname => 0});
+
 my ($testdata, $inpath) = create_testdata(
     name => "in1",
     rows => [
@@ -422,7 +425,7 @@ die dvis '$expected_rx' unless $expected_rx == 7;
 # Can't auto-detect because it would skip the title row due to the empty title
 title_rx 1;
 
-{ my $s=sheet(); dprint dvis('After reading $inpath->stringify\n   $$s->{rows}\n   $$s->{colx_desc}\n'); }
+{ my $s=sheet(); dprint $myvisobj->dvis('After reading $inpath->stringify\n   $$s->{rows}\n   $$s->{colx_desc}\n'); }
 
 
 alias Aalias => '^';
