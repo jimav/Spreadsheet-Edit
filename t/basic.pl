@@ -11,7 +11,6 @@ use t_TestCommon  # Test2::V0 etc.
             arrays_eq hash_subset
             @quotes/;
 use t_SSUtils;
-use Capture::Tiny qw/capture_merged tee_merged/;
 
 use Spreadsheet::Edit qw/fmt_sheet cx2let let2cx sheet/;
 use Test::Deep::NoTest qw/eq_deeply/;

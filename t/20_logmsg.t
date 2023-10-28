@@ -1,10 +1,13 @@
+use FindBin qw($Bin);
+use lib $Bin;
+use t_TestCommon qw/my_capture/; # also imports Test2::V0 etc.
+
 use strict; use warnings; use feature qw/say/;
 use open ':std', ':encoding(UTF-8)';
 use utf8;
 
 my $mypkg = __PACKAGE__;
 
-use Test2::V0;
 use Carp;
 use Data::Dumper::Interp qw/vis visq dvis dvisq u visnew/;
 
@@ -13,7 +16,6 @@ use Spreadsheet::Edit qw/:all logmsg/;
 use Spreadsheet::Edit::Log ':btw=L=${lno} F=${fname} P=${pkg}';
 
 use File::Basename qw/basename/;
-use Capture::Tiny qw/capture/;
 
 die "oops" unless ! %Spreadsheet::Edit::pkg2currsheet;
 die "oops" unless ! defined $Spreadsheet::Edit::_inner_apply_sheet;
@@ -23,7 +25,7 @@ sub wrapper($@) {
   btwN $N,@_;
 }
 { my $baseline = __LINE__;
-  my ($out, $err, $exit) = capture {
+  my ($out, $err, $exit) = t_TestCommon::my_capture {
     { package Foo; main::btw "A1 btw from line ",$baseline+2; }
     btw "A2 btw from line ",$baseline+3;
     btwN 0,"BB btwN(0...) from line ",$baseline+4;

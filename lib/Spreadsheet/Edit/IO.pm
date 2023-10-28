@@ -879,7 +879,7 @@ sub _convert_using_openlibre($$$) {
   # With 'allsheets' the resulting files must be renamed to conform to our
   # external API (namely SHEETNAME.csv).
   #
-  # ERROR DETECTION: As of LO 7.5 we always get zero exist status and the
+  # ERROR DETECTION: As of LO 7.5 we always get zero exit status and the
   # only way to detect errors is to notice that no files were written.
   # https://bugs.documentfoundation.org/show_bug.cgi?id=155415
   #
