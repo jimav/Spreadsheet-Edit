@@ -284,9 +284,14 @@ sub let2cx(_) {
 }
 
 # Produce the "automatic alias" identifier for an arbitrary title
+#
 sub title2ident($) {
   local $_ = shift;
-  s/^\s+//;  s/\s+$//;  s/\W/_/g;  s/^(?=\d)/_/;
+  s/^\s+//;  s/\s+$//;
+  s/\W/_/g;
+  s/^(?=\d)/_/;
+  # Also avoid the legal identifiers "_" and "ARGV"
+  $_ = "_".$_ if $_ eq "ARGV" || $_ eq "_";
   $_
 }
 
@@ -462,15 +467,24 @@ sub _fmt_colx(;$$) {
          ], $indent, $foldwidth;
 }
 
-# Is a title a special symbol or looks like a cx number?
+# Is a title a special symbol, looks like a cx number, or is a Perl
+# built-in variable?
 sub __unindexed_title($$) {
   my ($title, $num_cols) = @_;
-oops unless defined $title;
+  oops unless defined $title;
+my $r =
   $title eq ""
-  || $title eq '^'
-  || $title eq '$'
-  || ( ($title =~ /^[1-9]\d*$/ || $title eq "0") # not with leading zeros
-       && $title <= $num_cols )
+  || $title =~ /^\W$/    # ^ or $ or any single punctuation or control-char
+  || $title =~ /\^\w+$/  # ^Var to not confuse w Perl "control-character" names
+  || $title =~ /^(?:ARGV|ARGVOUT|_)$/
+  || $title =~ /::/                    # package::qualified::name
+  || $title =~ /^[0-9]$/               # $0 and regex $1 $2 .. $9
+                                       # (regardless of max cx)
+  || ($title =~ /^[1-9]\d+$/a
+       && $title <= $num_cols) # cx values > 9
+;
+#btw ivis 'unindexed: $title' if $r;
+$r
 }
 sub _unindexed_title { #method for use by tests
   my $self = shift;
@@ -1140,7 +1154,7 @@ sub _tie_col_vars {
       next
     }
 
-btw dvis '##ZZ $ident $safe ${^GLOBAL_PHASE} @safecheck_pkgs\n' if $debug;
+#btw dvis '##ZZ $ident $safe ${^GLOBAL_PHASE} @safecheck_pkgs\n' if $debug;
 
     no strict 'refs';
     if ($safe) {
@@ -1157,17 +1171,16 @@ btw ivis ' Checking pkg $p ident $ident ...\n' if $debug;
         if (exists ${$p.'::'}{$ident}) {
           my $msg = <<EOF ;
 COLSPEC '$ident' clashes with an existing object in package '$p' .
-    This is dis-allowed when tie_column_vars was called with option :safe,
-    in this case at ${file}:${lno} .  In this situation you can not
-    explicitly declare the tied variables, and they must be tied and
-    imported before the compiler sees them.
+    This is dis-allowed when tie_column_vars was called with option :safe.
+    In this situation you can not explicitly declare the tied variables
+    (depends on the Perl version), and in any case they must be tied and
+    imported before the compiler sees any references to them.
 
     Note: The clash might not be with a scalar \$$ident, but something else
     named '${ident}' in the same package (array, hash, sub, filehandle,
     etc.) Unfortunately it is not possible to distinguish a non-existent
     scalar from a declared scalar containing an undef value
-    (see *foo{SCALAR} in 'man perlref').  Therefore, to be safe,
-    nothing is allowed to pre-exist with the name '${ident}'.
+    (see *foo{SCALAR} in 'man perlref').
 EOF
           # We can detect anything other than an undef scalar
           local $Data::Dumper::Maxdepth = 2;
@@ -1263,14 +1276,22 @@ sub tie_column_vars(;@) {
 
   # With ':all' tie all possible variables, now and in the future.
   #
-  # CURRENTLY UNDOCUMENTED: With the ":safe" token, a check is made
-  # that variables do not already exist immediately before tying them;
-  # otherwise an exception is thrown.
+  # TODO: Remove :safe as not useful...
   #
-  # When ':safe' is combined with ':all', variables will not be checked & tied
-  # except during compile time, i.e. within BEGIN{...}.  Therefore a
-  # malicious spreadsheet can not cause an exception after the compilation
-  # phase.
+  # With the ":safe" token, an exception is thrown if any pre-existing
+  # variable (actually any symbol with the same identifier) exists.
+  #
+  # ":safe" is usable only during the compile phase, i.e. within BEGIN{...}
+  # because in other circumstances the user must declare the tied variables
+  # and those declarations will have already been compiled; therefore they
+  # will be detected as "pre-existing".
+  #
+  # However ":safe" doesn't provide any protection from clobbering package
+  # variables declared afterwards (e.g. with "our"), and as of v1000.011
+  # Perl's built-in variables (punctuation vars, etc.) are always protected.
+  # SO THIS FEATURE IS LIKELY TO BE REMOVED.
+  #
+  # Stick to lexical variables to be safe.
   my $safe = delete $tokens{':safe'};
   my ($file, $lno) = __fn_ln_methname();
   my $parms = [$safe, $file, $lno];
@@ -3481,8 +3502,13 @@ In addition, variables will be tied in the future I<whenever new identifiers
 become valid> (for example when a new C<alias> is created, column added,
 or another file is read into the same sheet).
 
-Although convenient this is B<insecure> because malicious
-titles could clobber unintended globals.
+Although convenient this is B<insecure> if package (e.g "our") variables are
+used for any other purpose
+because they could be clobbered by malicious spreadsheet titles
+(lexical "my" variables are always safe).
+Perl's built-in punctuation variables and $ARGV can not be clobbered because
+those names are always excluded as column identifiers (see COLSEPCs).
+However names from C<use English;> are not similarly protected!
 
 If VARNAMES are also specified, those variables will be tied
 immediately even if not yet usable; an exception occurs if a tied variable
@@ -3491,13 +3517,13 @@ is referenced before the corresponding alias or title exists.
 
 =head2 Use in BEGIN{} or module import methods
 
-C<tie_column_vars> B<imports> the tied variables into your module,
-or the module specified with package => "pkgname" in {OPTIONS}.
+C<tie_column_vars> also B<imports> the tied variables into your package
+(or as specified with package => "pkgname").
 
-It is unnecessary to declare tied variables if the import
-occurs before code is compiled which references the variables.  This can
-be the case if C<tie_column_vars> is called in a BEGIN{} block or in the
-C<import> method of a module loaded with C<use>.
+It is unnecessary to declare variables if they are imported before any
+code which references them is compiled.
+This can be the case when C<tie_column_vars> is called in a BEGIN{} block
+or in the C<import> method of a module loaded via C<use>.
 
 L<Spreadsheet::Edit::Preload> makes use of this.
 
@@ -3964,8 +3990,10 @@ Arguments which specify columns may be:
 item listed higher up.
 
 **Titles may be used directly if they can not be confused with
-a user-defined alias, the special names '^' or '$' or a numeric
-column index.  See "CONFLICT RESOLUTION".
+a user-defined alias, Perl's built-in punctuation variables or ARGV,
+the special names '^' or '$', or a numeric column index
+(to access columns with such titles, create an alias using a regex).
+See "CONFLICT RESOLUTION".
 
 B<AUTOMATIC ALIASES> are Perl I<identifiers> derived from column titles by
 first removing leading or trailing spaces, and then
@@ -4008,7 +4036,7 @@ B<Actual Titles> refer to to their columns, except if they:
 
 are the same as a user-defined alias
 
-are '^' or '$'
+are '^' or '$' or conflict with a Perl built-in variable
 
 consist only of digits (without leading 0s) corresponding
 to a valid column index.
@@ -4021,8 +4049,8 @@ unless they conflict with a user-defined alias or an actual title.
 
 =back
 
-Note: To unconditionally refer to numeric titles or titles which
-look like '^' or '$', use a Regexp B<qr/.../>.
+Note: To refer to titles which are excluded by these rules,
+use a Regexp B<qr/.../>.
 Automatic Aliases can also refer to such titles if there are no conflicts.
 
 Column positions always refer to the data before a command is

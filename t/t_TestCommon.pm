@@ -36,7 +36,7 @@
 
 package t_TestCommon;
 
-use t_Common qw/oops mytempfile mytempdir/;
+use t_Common qw/oops mytempfile mytempdir/; # also List::Util etc.
 
 use v5.16; # must have PerlIO for in-memory files for ':silent';
 
@@ -246,19 +246,26 @@ sub string_to_tempfile($@) {
 #
 #
 sub run_perlscript(@) {
-  my $tf; # keep in scope until no longer needed
+  my @tfs; # keep in scope until no longer needed
   my @perlargs = ("-CIOE", @_);
   @perlargs = ((map{ "-I$_" } @INC), @perlargs);
   unshift @perlargs, "-MCarp=verbose" if $Carp::Verbose;
   unshift @perlargs, "-MCarp::Always=verbose" if $Carp::Always::Verbose;
   if ($^O eq "MSWin32") {
     for (my $ix=0; $ix <= $#perlargs; $ix++) {
-      if ($perlargs[$ix] =~ /^-w?[Ee]$/) {
+      if ($perlargs[$ix] =~ /^-(w?)([Ee])$/) {
         # Passing perl code in an argument is impractical in DOS/Windows
-        $tf = Path::Tiny->tempfile("perlcode_XXXXX");
-        $tf->spew_utf8($perlargs[$ix+1]);
-        splice(@perlargs, $ix, 2, $tf->stringify);
+        my $tf = Path::Tiny->tempfile("perlcode_XXXXX");
+        push @tfs, $tf;
+        # N.B. -e (not -E) can be an arg to odfedit as well
+        $tf->append_utf8("use feature qw/:all/;\n") if $2 eq 'E';
+        $tf->append_utf8($perlargs[$ix+1]);
+warn "============= DUMP OF -$1$2 FILE ===========\n", "".scalar($tf->slurp_utf8), "\n=============(end)============\n" if $debug;
+        splice @perlargs, $ix, 2, ($1 ? ("-w") : ()), $tf->canonpath;
+        $ix += 2;
       }
+    }
+    for (my $ix=0; $ix <= $#perlargs; $ix++) {
       for ($perlargs[$ix]) {
         if (/^-\*[Ee]/) { oops "unhandled perl arg" }
         s/"/\\"/g;
@@ -279,7 +286,7 @@ sub run_perlscript(@) {
       $msg .= " $k='$ENV{$k}'"
     }
     $msg .= " $perlexe";
-    $msg .= " '${_}'" foreach (@perlargs);
+    $msg .= " <<${_}>>" foreach (@perlargs);
     print STDERR "$msg\n";
   }
   my $wstat;
