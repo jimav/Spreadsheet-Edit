@@ -210,6 +210,7 @@ use Data::Dumper::Interp 6.007 qw/:all/;
 
 use Carp;
 our @CARP_NOT = qw(Spreadsheet::Edit
+                   Spreadsheet::Edit::RowsTie
                    Spreadsheet::Edit::IO
                    Tie::Indirect::Array Tie::Indirect::Hash
                    Tie::Indirect::Scalar
@@ -2804,7 +2805,7 @@ sub write_spreadsheet(*;@) {
 
   # {col_formats} may be [list of formats in column order]
   #   or { COLSPEC => fmt, ..., __DEFAULT__ => fmt }
-  # Transform the latter to the former...
+  # (we Transform the latter to the former...)
   my $cf = $opts->{col_formats} // croak "{col_formats} is required";
   if (ref($cf) eq "HASH") {
     my ($default, @ary);
@@ -2935,8 +2936,10 @@ package
 use parent 'Tie::Array';
 
 use Carp;
-#our @CARP_NOT = qw(Tie::Indirect Tie::Indirect::Array
-#                   Tie::Indirect::Hash Tie::Indirect::Scalar);
+our @CARP_NOT = qw(Tie::Indirect Tie::Indirect::Array
+                   Tie::Indirect::Hash Tie::Indirect::Scalar
+                   Tie::Array Tie::Hash
+                   Spreadsheet::Edit);
 use Data::Dumper::Interp 6.009 qw/visnew
                     vis  viso  avis  alvis  ivis  dvis  hvis  hlvis
                     visq visoq avisq alvisq ivisq dvisq hvisq hlvisq
@@ -2965,13 +2968,22 @@ sub STORE {
     unless $index >= 0 && $index <= $#$aref+1;
   croak "Value must be a ref to array of cell values (not $val)"
     if ! Spreadsheet::Edit::__looks_like_aref($val);
-  croak "Cell values may not be undef"
-    if grep{! defined} @$val;
-  croak "Cell values must be strings or numbers"
-    if grep{ ref($_) && !looks_like_number($_) } @$val;
+  # I can't make CARP_NOT skip past Spreadsheet::Edit so doing confess
   if (my $num_cols = $$sheet->{num_cols}) {
-    croak "New row must contain $num_cols cells (not ", $#$val+1, ")"
+    confess "New row must contain $num_cols cells (not ", $#$val+1, ")"
       if @$val != $num_cols;
+  }
+  for my $cx (0..$#$val) {
+    local $_ = $val->[$cx];
+    my $bad;
+    if    (! defined $_) { $bad = "undef" }
+    elsif (ref($_) && !looks_like_number($_)) { $bad = "strange object: $_" }
+    if ($bad) {
+      confess "Attempt to STORE a row at rx $index with $bad at cx $cx (",
+              Spreadsheet::Edit::cx2let($cx).")\n  ",
+              join("\n  ",map{ sprintf("[%d] %s: %s",$_,Spreadsheet::Edit::cx2let($_),u($val->[$_])) } 0..$#$val);
+            #"(".join(",",map{u} @$val).")\n";
+    }
   }
   # else (0 or undef) someone promises to set it later
 
