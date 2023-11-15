@@ -2806,18 +2806,20 @@ sub write_spreadsheet(*;@) {
   # {col_formats} may be [list of formats in column order]
   #   or { COLSPEC => fmt, ..., __DEFAULT__ => fmt }
   # (we Transform the latter to the former...)
-  my $cf = $opts->{col_formats} // croak "{col_formats} is required";
-  if (ref($cf) eq "HASH") {
-    my ($default, @ary);
-    while (my ($key, $fmt) = each %$cf) {
-      ($default = $fmt),next if $key eq "__DEFAULT__";
-      my $cx = $colx->{$key} // croak("Invalid COLSPEC '$key' in col_formats");
-      $ary[$cx] = $fmt;
+  my $cf = $opts->{col_formats};
+  if ($cf) {
+    if (ref($cf) eq "HASH") {
+      my ($default, @ary);
+      while (my ($key, $fmt) = each %$cf) {
+        ($default = $fmt),next if $key eq "__DEFAULT__";
+        my $cx = $colx->{$key} // croak("Invalid COLSPEC '$key' in col_formats");
+        $ary[$cx] = $fmt;
+      }
+      foreach (@ary) { $_ = $default if ! defined; }
+      $cf = \@ary;
     }
-    foreach (@ary) { $_ = $default if ! defined; }
-    $cf = \@ary;
   }
-  local $opts->{col_formats} = $cf;
+  local $opts->{col_formats} = $cf; # transformed form, or undef if not given
 
   my ($csvfh, $csvpath) = tempfile(SUFFIX => ".csv");
   { local $$self->{verbose} = 0;
@@ -2825,9 +2827,6 @@ sub write_spreadsheet(*;@) {
                              @sane_CSV_write_options);
   }
   close $csvfh or die "Error writing $csvpath : $!";
-
-  # Default sheet name to output file basename sans suffix
-  $opts->{sheetname} //= fileparse($outpath, qr/\.\w+/);
 
   convert_spreadsheet($csvpath,
                       %$opts,
