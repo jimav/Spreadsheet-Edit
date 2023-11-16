@@ -218,7 +218,8 @@ our @CARP_NOT = qw(Spreadsheet::Edit
 
 use Scalar::Util qw(looks_like_number openhandle reftype refaddr blessed);
 use List::Util qw(min max sum0 first any all pairs pairgrep);
-use File::Temp qw(tempfile tempdir);
+use Path::Tiny qw/path/;
+#use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename dirname fileparse);
 use File::Find ();
 use Symbol qw(gensym);
@@ -2821,14 +2822,18 @@ sub write_spreadsheet(*;@) {
   }
   local $opts->{col_formats} = $cf; # transformed form, or undef if not given
 
-  my ($csvfh, $csvpath) = tempfile(SUFFIX => ".csv");
+  # First convert to a temporary .csv named "<outputbasename>.csv"
+  # so that the 'sheet name' in the spreadsheet will be <outputbasename>.
+  #
+  my $tdir = Path::Tiny->tempdir(); # auto-delted when destroyed
+  my $csvpath = $tdir->child( path($outpath)->basename(qr/\.\w+$/).".csv" );
   { local $$self->{verbose} = 0;
-    $self->write_csv($csvfh, silent => 1, iolayers => ':encoding(UTF-8)',
-                             @sane_CSV_write_options);
+    $self->write_csv($csvpath->canonpath,
+                     silent => 1, iolayers => ':encoding(UTF-8)',
+                     @sane_CSV_write_options);
   }
-  close $csvfh or die "Error writing $csvpath : $!";
 
-  convert_spreadsheet($csvpath,
+  convert_spreadsheet($csvpath->canonpath,
                       %$opts,
                       iolayers => ':encoding(UTF-8)',
                       cvt_from => "csv",
