@@ -23,10 +23,9 @@ our @EXPORT = qw/fmt_call log_call fmt_methcall log_methcall
 my $default_pfx = '$lno';
 
 sub _btwTN($$@) {
-  local ($@, $_); # dont clobber callers variables
+  local ($@, $_); # dont clobber caller's variables
   my ($pfxexpr, $N, @strings) = @_;
   local $_ = join("", @strings);
-#Carp::cluck "-----pfxexpr=$pfxexpr N=$N strings=@strings\n";
   $pfxexpr = $default_pfx if $pfxexpr eq "__DEFAULT__";
   s/\n\z//s;
   my @levels;
@@ -60,6 +59,9 @@ sub _btwTN($$@) {
     croak "ERROR IN btw prefix '$pfxexpr': $@" if $@;
     $pfx .= $sep if $pfx;
     $pfx .= $s;
+  }
+  if (ref($N) eq "") {
+    foreach (2..$N) { $pfx .= "«" }
   }
   print STDERR "${pfx}: $_\n";
 }
@@ -116,12 +118,17 @@ use List::Util qw/first any all/;
 use File::Basename qw/dirname basename/;
 
 sub oops(@) {
+  my $pkg = caller;
+  my $pfx = "\nOOPS";
+  $pfx .= " in pkg '$pkg'" unless $pkg eq 'main';
+  $pfx .= ":\n";
   if (defined(&Spreadsheet::Edit::logmsg)) {
     # Show current apply sheet & row if any.
-    @_=("\n".(caller)." oops:\n",&Spreadsheet::Edit::logmsg(@_),"\n");
+    @_=($pfx, &Spreadsheet::Edit::logmsg(@_));
   } else {
-    @_=("\n".(caller)." oops:\n",@_,"\n");
+    @_=($pfx, @_);
   }
+  push @_,"\n" unless $_[-1] =~ /\R\z/;
   goto &Carp::confess
 }
 
