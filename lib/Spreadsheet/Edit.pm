@@ -72,13 +72,13 @@ use Symbol qw/gensym/;
 our @EXPORT = qw(
   alias apply apply_all apply_exceptrx apply_torx attributes
   spectocx data_source delete_col delete_cols delete_row delete_rows
-  transpose join_cols join_cols_sep move_col
+  first_data_rx transpose join_cols join_cols_sep last_data_rx move_col
   move_cols insert_col insert_cols insert_row insert_rows new_sheet only_cols
   options read_spreadsheet rename_cols reverse_cols
   sheet sheetname sort_rows split_col tie_column_vars title2ident title_row
   title_rx unalias write_csv write_spreadsheet );
 
-my @stdvars = qw( $title_rx $num_cols
+my @stdvars = qw( $title_rx $first_data_rx $last_data_rx $num_cols
                   @rows @linenums @meta_info %colx %colx_desc $title_row
                   $rx $linenum @crow %crow );
 
@@ -129,6 +129,8 @@ sub __gen_scalar {
           $canon_ident, $onlyinapply);
 }
 sub _generateScalar_num_cols      { __gen_scalar(@_, "num_cols") }
+sub _generateScalar_first_data_rx { __gen_scalar(@_, "first_data_rx") }
+sub _generateScalar_last_data_rx  { __gen_scalar(@_, "last_data_rx") }
 sub _generateScalar_rx            { __gen_scalar(@_, "current_rx", 1) }
 
 #sub _generateScalar_title_rx      { __gen_scalar(@_, "title_rx") }
@@ -981,6 +983,8 @@ sub new { # Strictly OO, this does not affect caller's "current sheet".
       useraliases      => {},     # key exists for user-defined alias names
 
       title_rx         => undef,
+      first_data_rx    => undef,
+      last_data_rx     => undef,
       current_rx       => undef,  # valid during apply()
 
       pkg2tiedvarnames => {},
@@ -1085,6 +1089,8 @@ sub _rows_replaced {  # completely new or replaced rows, linenums, etc.
     unless @$linenums == @$rows;
 
   $hash->{title_rx} = undef;
+  $hash->{first_data_rx} = undef;
+  $hash->{last_data_rx} = undef;
   $hash->{useraliases} = {};
   $self->_rebuild_colx; # Set up colx colx_desc
   $self
@@ -1998,6 +2004,38 @@ sub _autodetect_title_rx {
   }
 }
 
+sub first_data_rx(;$) {
+  my $self = &__self;
+  my $first_data_rx = $$self->{first_data_rx};
+  if (@_ == 0) { # 'get' request
+    $self->_logmethretifv([], [$first_data_rx]);
+    return $first_data_rx;
+  }
+  my $rx = __validate_nonnegi_or_undef( shift() );
+  $self->_logmethretifv([$rx]);
+  # Okay if this points to one past the end
+  $self->_check_rx($rx, 1) if defined $rx;  # one_past_end_ok=1
+  $$self->{first_data_rx} = $rx;
+  $self
+}
+sub last_data_rx(;$) {
+  my $self = &__self;
+  my $last_data_rx = $$self->{last_data_rx};
+  if (@_ == 0) { # 'get' request
+    $self->_logmethretifv([], [$last_data_rx]);
+    return $last_data_rx;
+  }
+  my $rx = __validate_nonnegi_or_undef( shift() );
+  $self->_logmethretifv([$rx]);
+  if (defined $rx) {
+    $self->_check_rx($rx, 1); # one_past_end_ok=1
+    confess "last_data_rx must be >= first_data_rx"
+      unless $rx >= ($$self->{first_data_rx}//0);
+  }
+  $$self->{last_data_rx} = $rx;
+  $self
+}
+
 # move_cols ">COLSPEC",source cols...
 # move_cols "absolute-position",source cols...
 sub move_cols($@) {
@@ -2088,10 +2126,12 @@ sub sort_rows(&) {
   croak "bad args" unless @_ == 1;
   my ($cmpfunc, $first_rx, $last_rx) = @_;
 
-  my ($rows, $linenums, $title_rx) = @$$self{qw/rows linenums title_rx/};
+  my ($rows, $linenums, $title_rx, $first_data_rx, $last_data_rx)
+       = @$$self{qw/rows linenums title_rx first_data_rx last_data_rx/};
 
-  $first_rx //= (defined($title_rx) ? $title_rx+1 : 0);
-  $last_rx  //= $#$rows;
+  $first_rx //= $first_data_rx
+                 // (defined($title_rx) ? $title_rx+1 : 0);
+  $last_rx  //= $last_data_rx // $#$rows;
 
   $self->_logmethifv(\"(sorting rx ${first_rx}..${last_rx})");
 
@@ -2244,6 +2284,7 @@ sub join_cols(&@) {
                ? $separator
                : sub{ $_ = join $separator, @_ } ;
 
+  # Note first/last_data_rx are ignored
   { my $first_rx = ($hash->{title_rx} // -1)+1;
     _apply_to_rows($self, $code, \@source_cxs, undef, $first_rx, undef);
   }
@@ -2286,16 +2327,17 @@ sub rename_cols(@) {
 # apply {code}, colspec*
 #   @_ are bound to the columns in the order specified (if any)
 #   $_ is bound to the first such column
-#   Only visit rows following the title row (if defined).
+#   Only visit rows bounded by first_data_rx and/or last_data_rx,
+#   starting with title_rx+1 if a title row is defined.
 sub apply(&;@) {
   my $self = &__selfmust;
   my ($code, @cols) = @_;
   my $hash = $$self;
   my @cxs = map { scalar $self->_spec2cx($_) } @cols;
 
-  my $first_rx = ($hash->{title_rx} // -1) + 1;
+  my $first_rx = max(($hash->{title_rx} // -1)+1, $hash->{first_data_rx}//0);
 
-  @_ = ($self, $code, \@cxs, undef, $first_rx, $#{$hash->{rows}});
+  @_ = ($self, $code, \@cxs, undef, $first_rx, $hash->{last_data_rx});
   goto &_apply_to_rows
 }
 
@@ -2324,6 +2366,7 @@ sub __arrify_checknotempty($) {
 # apply_torx {code} rx,        colspec*
 # apply_torx {code} [rx list], colspec*
 # Only the specified row(s) are visited
+# first/last_data_rx are ignored.
 sub apply_torx(&$;@) {
   my $self = &__selfmust;
   my ($code, $rxlist_arg, @cols) = @_;
@@ -2406,6 +2449,8 @@ sub transpose() {
 
   $$self->{useraliases} = {};
   $$self->{title_rx} = undef;
+  $$self->{first_data_rx} = undef;
+  $$self->{last_data_rx} = undef;
 
   # Save a copy of the data
   my @old_rows = ( map{ [ @$_ ] } @$rows );
@@ -2442,8 +2487,8 @@ sub delete_rows(@) {
   my $self = &__selfmust;
   my (@rowspecs) = @_;
 
-  my ($rows, $linenums, $title_rx, $current_rx, $verbose)
-    = @$$self{qw/rows linenums title_rx current_rx verbose/};
+  my ($rows, $linenums, $title_rx, $first_data_rx, $last_data_rx, $current_rx, $verbose)
+    = @$$self{qw/rows linenums title_rx first_data_rx last_data_rx current_rx verbose/};
 
   foreach (@rowspecs) {
     $_ = $#$rows if /^(?:LAST|\$)$/;
@@ -2465,6 +2510,18 @@ sub delete_rows(@) {
       }
     }
     $$self->{title_rx} = $title_rx;
+  }
+  if (defined $first_data_rx) {
+    foreach (@rev_sorted_rxs) {
+      if ($_ <= $first_data_rx) { --$first_data_rx }
+    }
+    $$self->{first_data_rx} = $first_data_rx;
+  }
+  if (defined $last_data_rx) {
+    foreach (@rev_sorted_rxs) {
+      if ($_ <= $last_data_rx) { --$last_data_rx }
+    }
+    $$self->{last_data_rx} = $last_data_rx;
   }
 
   # Back up $current_rx to account for deleted rows.
@@ -2501,8 +2558,8 @@ sub insert_rows(;$$) {
   $rx //= 'END';
   $count //= 1;
 
-  my ($rows, $linenums, $num_cols, $title_rx)
-    = @$$self{qw/rows linenums num_cols title_rx/};
+  my ($rows, $linenums, $num_cols, $title_rx, $first_data_rx, $last_data_rx)
+    = @$$self{qw/rows linenums num_cols title_rx first_data_rx last_data_rx/};
 
   $rx = @$rows if $rx =~ /^(?:END|\$)$/;
 
@@ -2513,6 +2570,12 @@ sub insert_rows(;$$) {
 
   if (defined($title_rx) && $rx <= $title_rx) {
     $$self->{title_rx} = ($title_rx += $count);
+  }
+  if (defined($first_data_rx) && $rx <= $first_data_rx) {
+    $$self->{first_data_rx} = ($first_data_rx += $count);
+  }
+  if (defined($last_data_rx) && $rx <= $last_data_rx) {
+    $$self->{last_data_rx} = ($last_data_rx += $count);
   }
 
   for (1..$count) {
@@ -3354,6 +3417,7 @@ The file may be a .csv or any format supported by Libre Office or gnumeric.
 
 By default column titles are auto-detected and
 an exception is thrown if a plausible title row can not be found.
+
 {OPTIONS} may include:
 
 Auto-detection options:
@@ -3591,6 +3655,8 @@ If a list of COLSPECs is specified, then
 
 C<apply> normally visits all rows which follow the title row, or all rows
 if there is no title row.
+C<first_data_rx> and C<last_data_rx>, if defined, further limit the
+range visited.
 
 C<apply_all> unconditionally visits every row, including any title row.
 
@@ -3605,7 +3671,7 @@ Nested and recursive C<apply>s are allowed.
 When an 'apply' changes the 'current sheet',
 tied variables then refer to the other sheet and
 any C<apply> active for that sheet.
-With nested 'apply's, take care to restore the original sheet
+If using nested I<apply>s, take care to restore the original sheet
 before returning (C<Guard::scope_guard> is useful).
 
 B<MAGIC VARIABLES USED DURING APPLY>
@@ -3703,7 +3769,8 @@ If there is no title row, specify C<undef> for each new title.
 =head2 sort_rows {rx cmp function} $first_rx, $last_rx
 
 If no range is specified, then the range is the
-same as for C<apply> (namely: All rows after the title row).
+same as for C<apply> (namely: All rows after the title row unless
+limited by B<first_data_rx> .. B<last_data_rx>).
 
 In the comparison function, globals $a and $b will contain row objects, which
 are dual-typed to act as either an array or hash ref to the cells
@@ -3747,6 +3814,9 @@ and @_ bound to all named columns in the order given.
 
 It is up to your code to combine the data by reading
 @_ and writing $_ (or, equivalently, by writing $_[0]).
+
+C<first_data_rx> and C<last_data_rx> are ignored, and the title
+is I<not> modified.
 
 =head2 reverse_cols
 
@@ -3912,6 +3982,8 @@ if necessary to this width.
 
 =back
 
+Note: See C<Spreasheet::Edit-E<gt>new> if using the OO API.
+
 =head2 $curr_sheet = sheet ;
 
 =head2 $prev_sheet = sheet $another_sheet ;
@@ -3927,8 +3999,6 @@ tied column variables and STANDARD SHEET VARIABLES (described later).
 
 {OPTIONS} may specify C<< package => 'pkgname' >> to operate on the specified
 package instead of the caller's package.
-
-Note: See C<Spreasheet::Edit-E<gt>new> if using the OO API.
 
 =head1 STANDARD SHEET VARIABLES
 
@@ -3968,6 +4038,12 @@ The title row is auto-detected by default.
 See C<read_spreadsheet> and C<title_rx> for how to control this.
 
 If a column title is modified, set C<$title_rx = undef;> to force re-detection.
+
+=item $first_data_rx and $last_data_rx
+
+Optional limits on the range of rows visited by C<apply()>
+or sorted by C<sort_rows()>.  By default $first_data_rx
+is the first row following the title row (or 0 if no title row).
 
 =item %colx (column key => column index)
 
@@ -4101,6 +4177,10 @@ instead of (or in addition to) an {OPTIONS} hashref.
 
 =head2 $sheet->colx_desc() ;        # Analogous to \%colx_desc
 
+=head2 $sheet->first_data_rx() ;    # Analogous to $first_data_rx
+
+=head2 $sheet->last_data_rx() ;     # Analogous to $last_data_rx
+
 =head2 $sheet->title_rx() ;         # Analogous to to $title_rx
 
 =head2 $sheet->title_row() ;        # Analogous to $title_row
@@ -4145,7 +4225,6 @@ the first message string.
 The details of formatting the sheet may be customized with a call-back
 given by a C<{logmsg_pfx_gen}> attribute.  See comments
 in the source for how this works.
-
 
 
 =head1 SEE ALSO

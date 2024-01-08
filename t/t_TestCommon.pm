@@ -256,10 +256,11 @@ sub run_perlscript(@) {
   #unshift @perlargs, "-MCarp=verbose" if $Carp::Verbose;
   #unshift @perlargs, "-MCarp::Always=verbose" if $Carp::Always::Verbose;
 
-  # For unknown reason some smokers running older perls die with
-  # "...undef value as a subroutine reference at site_perl/5.20.3/TAP/Harness.pm line 612
-  # So trying to see what is happening...
-  unshift @perlargs, "-MCarp::Always=verbose";
+  ##This breaks no-internals-mentioned (AUTHOR_TESTS) in Spreadsheet::Edit
+  ## For unknown reason some smokers running older perls die with
+  ## "...undef value as a subroutine reference at site_perl/5.20.3/TAP/Harness.pm line 612
+  ## So trying to see what is happening...
+  #unshift @perlargs, "-MCarp::Always=verbose";
 
   if ($^O eq "MSWin32") {
     for (my $ix=0; $ix <= $#perlargs; $ix++) {
