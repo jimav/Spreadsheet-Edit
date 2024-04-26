@@ -67,7 +67,8 @@ sub _btwTN($$@) {
     next unless defined $lno;
     (my $fname = $path) =~ s/.*[\\\/]//;
     $fname =~ s/\.pm$//;
-    (my $pkg = $package) =~ s/.*:://;
+    my $pkg = ($package =~ s/.*:://r);
+    my $pkg_space = $package eq "main" ? "" : "$pkg ";
     my $s = eval qq< qq<${pfxexpr}> >;
     croak "ERROR IN btw prefix '$pfxexpr': $@" if $@;
     $pfx .= $sep if $pfx;
@@ -103,7 +104,7 @@ sub import {
   foreach (@_) {
     local $_ = $_; # mutable copy
     if (/btw/ && ($prev_pkg//=$pkg) ne $pkg) {
-      $default_pfx = '$pkg $lno'; # show package if imported from multiple
+      $default_pfx = '${pkg_space}$lno'; # show package if used in multiple
     }
     # Generate customized version of btwN() (called by btw) which uses an
     # arbitrary prefix expression.  The expression is eval'd each time,
