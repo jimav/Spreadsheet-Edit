@@ -3991,10 +3991,13 @@ associated with the sheet object.
 
 =head2 spectocx COLSPEC or qr/regexp/, ... ;
 
-Returns the 0-based indicies of the specified colomn(s).
-Throws an exception if there is no such column.
+Returns the 0-based indicies of the specified colomn(s), or
+throws an exception if there is no such column.
 A regexp may match multiple columns.
-See also C<%colx>.
+This allows probing column titles with fuzzy matching.
+
+See also C<%colx> (or the corespnding method) which may be easier to use
+when testing exact column titles.
 
 =head2 new_sheet
 
