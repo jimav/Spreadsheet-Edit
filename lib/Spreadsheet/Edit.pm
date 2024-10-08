@@ -212,7 +212,7 @@ use Data::Dumper ();
 use Data::Dumper::Interp 7.003 qw/:all/;
 
 use Carp;
-our @CARP_NOT = qw(Spreadsheet::Edit
+our @CARP_NOT = qw(
                    Spreadsheet::Edit::RowsTie
                    Spreadsheet::Edit::IO
                    Tie::Indirect::Array Tie::Indirect::Hash
@@ -824,7 +824,7 @@ sub __validate_opthash($$;@) {
   my ($opthash, $valid_keys, %opts) = @_;
   return unless defined $opthash; # silently accept undef
   foreach my $k (keys %$opthash) {
-    croak "Unrecognized ",($opts{desc}//"option")," '$k'"
+    croak "Unrecognized ",($opts{desc}//"option")," '$k'\n"
       unless first{$_ eq $k} @$valid_keys;
     confess "Option '$k' may not be 'undef'"
       if $opts{undef_ok_only} && !defined($opthash->{$k})
@@ -1741,6 +1741,8 @@ sub _colspec2cx {
 # THROWS if a spec does not indicate any existing column.
 # Can return multiple results due to multple args and/or Regexp multimatch
 # In scalar context returns the first result.
+# TODO: Change API to return undef for unmatches regex ??
+#       (so no need to filter exceptions to still die on real errors)
 sub spectocx(@) { # the user-callable API
   my $self = &__selfmust;
   my @list = $self->_specs2cxdesclist(@_);
@@ -2658,7 +2660,7 @@ sub read_spreadsheet($;@) {
                       [
       qw/data_source title_rx/,
       qw/iolayers encoding                     /,
-      qw/tempdir use_gnumeric raw_values sheetname/, # for OpenAsCsv
+      qw/tempdir use_gnumeric raw_values sheetname input_encoding/, # for OpenAsCsv
       qw/required min_rx max_rx first_cx last_cx/, # for title_rx
                       ],
       desc => "read_spreadsheet option",
