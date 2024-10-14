@@ -794,7 +794,7 @@ sub _convert_using_openlibre($$$) {
       #  effectively disabling Token 8.  This must be false to recognize dates
       #   like "Jan 1, 2000" which by necessity must be quoted for the comma,
       #   but will **CORRUPT** zip codes with leading zeroes unless
-      #   col_formats overrides (which it does now by default).
+      #   {col_formats} overrides (which it does now by default).
       .",false" # default: false
       # Token 8: on input: "Detect Special Numbers", i.e. date or time values
       #   in human form, numbers in scientific (expondntial) notation etc.
@@ -821,6 +821,7 @@ sub _convert_using_openlibre($$$) {
     if ($opts->{cvt_to} eq "csv") {
       my $filter_name = $suf2ofilter->{$opts->{cvt_to}} or oops;
       my $enc = $opts->{output_encoding};
+oops dvis '$opts' unless defined $enc;
       my $charset = _name2LOcharsetnum($enc); # dies if unknown enc
       $filter_name.":"
       # Tokens 1-4: FldSep=, TxtDelim=" Charset FirstLineNum
@@ -1366,30 +1367,30 @@ sub _preprocess($$) {
         for ($row->[$cx]) {
           # recognize obvious Y/M/D or M/D/Y or D/M/Y date forms
           if (m#\b(?<y>(?:[12]\d)?\d\d)/(?<m>\d\d)/(?<d>\d\d)\b#) {
-            if ($+{d} > 12 && $+{d} <= 31 && $+{m} >= 1 && $+{m} <= 12
-                 && ($+{y} < 100 || $+{y} >= 1000)) {
+            if ($+{d} > 12 && $+{d} <= 31 && $+{"m"} >= 1 && $+{"m"} <= 12
+                 && ($+{"y"} < 100 || $+{"y"} >= 1000)) {
               recognized($cx,$rx,$_,"YY/MM/DD");
               next CX;
             }
             # If ambiguous YYYY/??/?? we can still assume it is a date and not text
-            if (length( $+{y} )==4) {
+            if (length( $+{"y"} )==4) {
               #recognized($cx,$rx,$_,""," as some kind of date, fmt unknown");
               next RX;
             }
           }
           if (m#\b(?<m>\d\d)/(?<d>\d\d)/(?<y>(?:[12]\d)?\d\d)\b#) {
-            if ($+{y} < 100 || $+{y} >= 1000) {
-              if ($+{d} > 12 && $+{d} <= 31 && $+{m} >= 1 && $+{m} <= 12) {
+            if ($+{"y"} < 100 || $+{"y"} >= 1000) {
+              if ($+{d} > 12 && $+{d} <= 31 && $+{"m"} >= 1 && $+{"m"} <= 12) {
                 recognized($cx,$rx,$_,"MM/DD/YY");
                 next CX
               }
-              elsif ($+{m} > 12 && $+{m} <= 31 && $+{d} >= 1 && $+{d} <= 12) {
+              elsif ($+{"m"} > 12 && $+{"m"} <= 31 && $+{d} >= 1 && $+{d} <= 12) {
                 recognized($cx,$rx,$_,"DD/MM/YY");
                 next CX
               }
             }
             # If ambiguous ??/??/YYYY we can still assume it is a date and not text
-            if (length($+{y})==4) {
+            if (length($+{"y"})==4) {
               #recognized($cx,$rx,$_,""," as some kind of date, fmt unknown");
               next RX;
             }
@@ -1452,6 +1453,11 @@ sub _preprocess($$) {
   }
   oops if defined($rows) && $opts->{cvt_from} ne "csv";
 
+  if ($opts->{cvt_from} eq "csv") {
+    determine_csv_col_formats(\$rows);
+  } else {
+    oops if defined($rows);
+  }
   $opts->{output_encoding} //= $default_output_encoding
     if $opts->{cvt_to} eq "csv";
 

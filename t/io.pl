@@ -39,10 +39,10 @@ my $can_extract_allsheets   = Spreadsheet::Edit::IO::can_extract_allsheets();
 sub verif_Sheet1(;$){
   my $msg = $_[0] // "";
   eq_deeply(title_rx(), 0) or die "${msg} title_rx is not 0";
-  eq_deeply([@{ title_row() }],["First Name","Last Name","Email","Date"])
+  eq_deeply([@{ title_row() }],["First Name","Last Name","Email","Date","Zipcode"])
     or confess "${msg} Sheet1 titles wrong\n", dvis('${\title_rx()} @{ title_row() }');
   #eq_deeply([@{ $rows[3] }],["Françoise-Athénaïs","de Rochechouart","","Oct 5, 1640"])
-  my $exp = ["Françoise-Athénaïs","de Rochechouart","","10/05/1640"];
+  my $exp = ["Françoise-Athénaïs","de Rochechouart","","10/05/1640","00007"];
   eq_deeply([@{ $rows[3] }],$exp)
     or confess "${msg} Sheet1 row 4 is wrong,\n",
                "  got: ",avis(@{ $rows[3] }),"\n",
