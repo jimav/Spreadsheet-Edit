@@ -1587,7 +1587,7 @@ sub _extract_one_csv($) {
       croak "$opts->{inpath_sans_sheet} contains multiple sheets; you must specify a sheetname\n"
     }
   }
-}
+}#_extract_one_csv
 sub _write_spreadsheet($) {
   my ($opts) = @_;
 

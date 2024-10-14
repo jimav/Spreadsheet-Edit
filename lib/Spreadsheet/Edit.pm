@@ -760,8 +760,8 @@ sub __self_ifexists {
 sub __selfmust { # sheet must exist, otherwise throw
   &__self_ifexists || do{
     my $pkg = caller(1);
-    #croak __methname()," : No sheet is defined in $pkg\n"
-    confess __methname()," : No sheet is defined in $pkg\n"
+    #croak __methname()," : No sheet is active in package $pkg\n"
+    confess __methname()," : No sheet is active in package $pkg\n"
   };
 }
 
@@ -2906,7 +2906,7 @@ sub write_spreadsheet(*;@) {
   my ($self, $opts, $outpath) = &__self_opthash_1arg;
 
   if ($outpath =~ /\.csv$/i) {
-    goto &write_csv;
+    return $self->write_csv($opts, $outpath);
   }
 
   my $colx = $$self->{colx};
@@ -2932,9 +2932,9 @@ sub write_spreadsheet(*;@) {
   local $opts->{col_formats} = $cf; # transformed form, or undef if not given
 
   # First convert to a temporary .csv named "<outputbasename>.csv"
-  # so that the 'sheet name' in the spreadsheet will be <outputbasename>.
+  # so that the 'sheet name' in the spreadsheet will be <outputbasename> .
   #
-  my $tdir = Path::Tiny->tempdir(); # auto-delted when destroyed
+  my $tdir = Path::Tiny->tempdir(); # auto-deleted when destroyed
   my $csvpath = $tdir->child( path($outpath)->basename(qr/\.\w+$/).".csv" );
   { local $$self->{verbose} = 0;
     $self->write_csv($csvpath->canonpath,
