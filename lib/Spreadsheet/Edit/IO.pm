@@ -56,6 +56,7 @@ use List::Util qw/none all notall first min max/;
 use Encode qw(encode decode);
 use File::Glob qw/bsd_glob GLOB_NOCASE/;
 use Digest::MD5 qw/md5_base64/;
+use Data::Hexify qw/Hexify/;
 use Text::CSV ();
 # DDI 5.025 is needed for Windows-aware qsh()
 use Data::Dumper::Interp 5.025 qw/vis visq dvis dvisq ivis ivisq avis qsh qshlist u/;
@@ -122,7 +123,7 @@ sub _get_exclusive_lock($) { # returns lock object
   my $sleeptime = 1;
   my $lock_fh;
   while (! defined $lock_fh) {
-    #warn "$$ : ### AAA open $lockfile_path ...\n";
+    #warn "$$ : ### AA1 open $lockfile_path ...\n";
     open $lock_fh, "+>>", $lockfile_path or die $!;
     #warn "$$ : ### AA2 open succeeded.\n";
     eval { chmod 0666, $lock_fh; }; # sometimes not implemented
@@ -1224,14 +1225,37 @@ sub _preprocess($$) {
   my ($fh, $start_pos);
   # Skip to ==BODY== below
 
+#  my sub _dump_fh($) {
+#    return unless $debug;
+#    my $tag = shift;
+#    confess dvis "($tag) fh is not open \$start_pos" unless $fh;
+#    my @layers = PerlIO::get_layers($fh);
+#    my $cur_pos = tell($fh);
+#    if (! seek($fh, $start_pos//0, SEEK_SET)) {
+#      btwN 1,dvis "($tag) **NOT SEEKABLE** \$cur_pos \@layers \$start_pos";
+#    } else {
+#      if ((my $n = read $fh, my $buffer, 128) != 0) {
+#        btwN 1,dvis "($tag) \$cur_pos \$start_pos \@layers First $n items are:\n", Hexify($buffer), "\n";
+#      } else {
+#        btwN 1,dvis "($tag) \$cur_pos \$start_pos \@layers **APPEARS EMPTY**";
+#      }
+#      seek($fh, $cur_pos, SEEK_SET) or die "re-seek to $cur_pos: $!";
+#    }
+#  }
   my sub set_fh_encoding() { # returns true if set
     my $enc = $opts->{input_encoding}; # must already be resolved!
     my $bmode = ":raw:encoding($enc):crlf";
     binmode $fh, $bmode or die "binmode '$bmode' : $!";
+    if ($debug) {
+      my @layers = PerlIO::get_layers($fh);
+      warn dvis 'set_fh_encoding: $fh @layers\n';
+    }
   }
   my sub open_input() {
+    oops if defined $fh;
     if (defined $$ref2octets) {
       open $fh, "<:raw", $ref2octets or confess "BUG:in-mem open:$!";
+      #_dump_fh("open_input TO PREVIOUSLY SLURPED");
     } else {
       my $path = $opts->{inpath_sans_sheet};
       $fh = openhandle($path); # undef unless $path is a file handle
@@ -1239,19 +1263,26 @@ sub _preprocess($$) {
         open $fh, "<", $path or die "$path : $!";
       }
       binmode($fh);
+      #_dump_fh("AAA $path open_input raw");
     }
     if (! seek($fh, 0, SEEK_SET)) {
       oops if defined $$ref2octets;
       local $/ = undef;
       $$ref2octets = <$fh>;  # N.B. includes possible BOM
+      close $fh;
+      $fh = undef;
       open $fh, "<:raw", $ref2octets or confess "BUG:in-mem open:$!";
+      #_dump_fh("BBB unseekable, slurped");
     }
     my $bomenc = File::BOM::get_encoding_from_filehandle($fh);
     $start_pos = tell($fh);
     if ($bomenc) {
       btw "Input has BOM, bomenc=$bomenc\n" if $debug;
       $opts->{input_encoding} = $bomenc;
+      binmode($fh);
+      binmode($fh, ":raw:encoding($bomenc):crlf") or die "binmode: $!";
     }
+    #_dump_fh("CCC final");
   }
   my sub determine_input_encoding() {
     # If one encoding was specified by the user or implied by a BOM, use it;
@@ -1314,7 +1345,7 @@ sub _preprocess($$) {
       SEP:
       for my $sep (defined($opts->{sep_char})
                      ? ($opts->{sep_char}) : (",","\t")) {
-        btw dvis '--- TRYING $q $sep ---' if $debug;
+        btw dvisq '--- TRYING $q $sep ---' if $debug;
 
 #        # Preliminary check for an illegal use of the quote char
 #        if (defined($chars)
@@ -1332,11 +1363,30 @@ sub _preprocess($$) {
           $opts->{sep_char} = $sep;
           last Q;
         }
-        warn vis '$@\nq=$q sep=$sep did not work...\n' if $debug;
+        warn dvis('$q sep=$sep did not work...\n'),vis($@),"\n"
+          if $debug;
+        _dump_fd("$q sep=$sep did not work") if $debug;
+        $$r2rows = undef;
       }
     }
     unless (defined($$r2rows)) {
+      #confess "Input file is not valid CSV (or we have a bug)\n"
+      seek($fh, $start_pos, SEEK_SET) or die $!; # skip over possible BOM
+      my $somechars = substr(do {local $/; <$fh>}, 0, 100);
+      my @layers = PerlIO::get_layers($fh);
+      warn dvis '$start_pos @layers $somechars\n';
+      if (open my $fh99, "<:raw", $opts->{inpath}) {
+        if ((my $nb = read $fh99, my $octets, 128) != 0) {
+          warn "First $nb octets are as follows:\n", Hexify($octets), "\n";
+        } else {
+          warn "File appears to be EMPTY\n";
+        }
+      }
       confess "Input file is not valid CSV (or we have a bug)\n"
+    }
+    else {
+      warn dvis '#### CSV DETECTED $opts->{quote_char} $opts->{sep_char}'
+        if $debug;
     }
   }#determine_csv_q_sep
 
@@ -1448,7 +1498,14 @@ sub _preprocess($$) {
       $opts->{cvt_from} = "csv";
     } else {
       #croak "Can not detect what kind of file ",qsh($opts->{inpath})," is\n";
-      croak "Can not detect what kind of file ",qsh($opts->{inpath})," is\n";
+      carp "Can not detect what kind of file ",qsh($opts->{inpath})," is\n",
+           $@, "\n";
+      open my $fh99, "<:raw", $opts->{inpath} or die "Can not re-open $opts->{inpath}: $!";
+      if ((my $nb = read $fh99, my $octets, 16) != 0) {
+        die "First 16 octets are as follows:\n", Hexify($octets);
+      } else {
+        die "File appears to be EMPTY";
+      }
     }
   }
   oops if defined($rows) && $opts->{cvt_from} ne "csv";
