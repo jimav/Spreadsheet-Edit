@@ -36,8 +36,8 @@ sub set_logdest(*) {
 my $default_pfx = '$lno';
 
 sub _btwTN($$@) {
-  local ($@, $_); # dont clobber caller's variables
   my ($pfxexpr, $N, @strings) = @_;
+  local $@;
   local $_ = join("", @strings);
   $pfxexpr = $default_pfx if $pfxexpr eq "__DEFAULT__";
   s/\n\z//s;
@@ -47,7 +47,6 @@ sub _btwTN($$@) {
     @levels = ($N);
   }
   elsif (ref($N) eq 'SCALAR' && defined($$N) && $$N >= 1) {
-    #@levels = reverse 0..($$N-1); # mini-traceback
     @levels = 0..($$N-1); # mini-traceback
     #$sep = "<";
     #$sep = " ← ";
@@ -55,7 +54,7 @@ sub _btwTN($$@) {
     #$sep = " « "; # « exists in both Unicode and latin1
     $sep = " ⇐ ";
   }
-  elsif (ref($N) eq 'ARRAY' && !grep{! defined} @$N) {
+  elsif (ref($N) eq 'ARRAY' && all{defined} @$N) {
     @levels = @$N
   }
   else {
@@ -79,7 +78,7 @@ sub _btwTN($$@) {
   }
   my $fh = $backup_defaults{logdest};
   print $fh "${pfx}: $_\n";
-}
+}#_btwTN
 
 sub _genbtw_funcs($$) {
   my ($pkg, $pfxexpr) = @_;
