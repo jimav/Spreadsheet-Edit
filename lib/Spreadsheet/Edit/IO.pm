@@ -1459,8 +1459,9 @@ sub _preprocess($$) {
     if ($opts->{outpath} && $opts->{outpath} =~ /\.([^.]+)$/) {
       $opts->{cvt_to} = $1;
     }
-    croak "'cvt_to' was not specified and can not be intuited from 'outpath'"
-      ,dvis('\n### $opts')  ###TEMP
+    croak "outpath ",qsh($opts->{outpath}),
+          " has no suffix and 'cvt_to' was not specified",
+          ,dvis('\n### $opts')  ###TEMP
       unless $opts->{cvt_to};
   }
   unless ($opts->{cvt_from}) {

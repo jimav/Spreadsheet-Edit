@@ -595,12 +595,13 @@ sub new_sheet(@) {
 #      spreadsheet read by read_spreadsheet().
 #
 # FIXME: I should either rename logmsg_pfx_gen as logmsg_sheetdesc_gen
-#        to reflect that it only generated the sheet-description part,
+#        to reflect that it only generates the sheet-description part,
 #        or else make prefix generators produce the entire message prefix
 #        including any row number.
 #
 sub _default_pfx_gen($$) {
   my ($sheet, $rx) = @_;
+  # N.B. $rx may be undef!
   confess "bug" unless ref($sheet) =~ /^Spreadsheet::Edit\b/;
   ($$sheet->{sheetname} || $$sheet->{data_source})
 }
@@ -1789,22 +1790,19 @@ sub alias(@) {
     my $ident = _validate_ident( shift @_ );
     my $spec  = shift @_;
 
-    if (my $wheredefined = $useraliases->{$ident}) {
-      croak "'$ident' is already a user-defined alias",
-            " for cx ", scalar($self->_spec2cx($ident)),
-            " defined at ", $wheredefined, "\n"
-            #" (for cx ", scalar($self->_spec2cx($ident)), ")"
-    }
-    croak "'$ident' is already a user-defined alias (for cx ",
-          scalar($self->_spec2cx($ident)), ")"
-      if $useraliases->{$ident};
-
     my $cx = eval{ $self->_spec2cx($spec) };
     unless(defined $cx) {
       oops unless $@;
       die $@ unless $opthash->{optional} && $@ =~ /does not match/is;
       # Always throw on other errors, e.g. regex matches more than one title
     };
+
+    if (my $wheredefined = $useraliases->{$ident}) {
+      my $ocx = scalar($self->_spec2cx($ident));
+      croak "'$ident' is already a user-defined alias",
+            " for cx $ocx defined at $wheredefined\n"
+        unless $ocx==$cx; # allow redundant alias definitions
+    }
 
     # Log each pair individually
     $self->_logmethifv($opthash, \", $ident => ",\__fmt_colspec_cx($spec,$cx));
