@@ -15,10 +15,16 @@ package Spreadsheet::Edit::Log;
 # DATE from Dist::Zilla::Plugin::OurDate
 
 use Carp;
+use Scalar::Util qw/reftype refaddr blessed weaken openhandle/;
+use List::Util qw/first any all/;
+use File::Basename qw/dirname basename/;
+use Data::Dumper::Interp qw/dvis vis visq avis hvis visnew addrvis u/;
 
 use Exporter 5.57 ();
 our @EXPORT = qw/fmt_call log_call fmt_methcall log_methcall
                  nearest_call abbrev_call_fn_ln_subname/;
+
+our @EXPORT_OK = qw/btw btwN btwbt oops set_logdest/;
 
 my %backup_defaults = (
   logdest         => \*STDERR,
@@ -34,6 +40,36 @@ sub set_logdest(*) {
 }
 
 my $default_pfx = '$lno';
+
+sub import {
+  my $class = shift;
+  my $pkg = caller;
+  state $prev_pkg;
+  my @remaining_args;
+  foreach (@_) {
+    local $_ = $_; # mutable copy
+    if (/btw/ && ($prev_pkg//=$pkg) ne $pkg) {
+      $default_pfx = '${pkg_space}$lno'; # show package if used in multiple
+    }
+    # Generate customized version of btwN() (called by btw) which uses an
+    # arbitrary prefix expression.  The expression is eval'd each time,
+    # referencing variables $path $fname $lno $package
+    # (it is eval'd multiple times if a [list of level numbers] is given).
+    if (/:btwN=(.*)\z/s) {
+      warn ":btwN is deprecated, just use :btw=... and both btw() and btwN() will be generated\n";
+      $_ = ":btw=$1";
+    }
+    if (/:btw=(.*)\z/s) {
+      _genbtw_funcs($pkg,$1);
+    }
+    else {
+      push @remaining_args, $_;
+    }
+  }
+  @_ = ($class, @remaining_args);
+  goto &Exporter::import
+}#import
+
 
 sub _btwTN($$@) {
   my ($pfxexpr, $N, @strings) = @_;
@@ -97,42 +133,6 @@ BEGIN {
   _genbtw_funcs(__PACKAGE__,'__DEFAULT__');
 }
 
-sub import {
-  my $class = shift;
-  my $pkg = caller;
-  state $prev_pkg;
-  my @remaining_args;
-  foreach (@_) {
-    local $_ = $_; # mutable copy
-    if (/btw/ && ($prev_pkg//=$pkg) ne $pkg) {
-      $default_pfx = '${pkg_space}$lno'; # show package if used in multiple
-    }
-    # Generate customized version of btwN() (called by btw) which uses an
-    # arbitrary prefix expression.  The expression is eval'd each time,
-    # referencing variables $path $fname $lno $package
-    # (it is eval'd multiple times if a [list of level numbers] is given).
-    if (/:btwN=(.*)\z/s) {
-      warn ":btwN is deprecated, just use :btw=... and both btw() and btwN() will be generated\n";
-      $_ = ":btw=$1";
-    }
-    if (/:btw=(.*)\z/s) {
-      _genbtw_funcs($pkg,$1);
-    }
-    else {
-      push @remaining_args, $_;
-    }
-  }
-  @_ = ($class, @remaining_args);
-  goto &Exporter::import
-}
-
-our @EXPORT_OK = qw/btw btwN btwbt oops set_logdest/;
-
-
-use Scalar::Util qw/reftype refaddr blessed weaken openhandle/;
-use List::Util qw/first any all/;
-use File::Basename qw/dirname basename/;
-
 sub oops(@) {
   my $pkg = caller;
   my $pfx = "\nOOPS";
@@ -149,8 +149,6 @@ sub oops(@) {
   STDERR->flush if openhandle(*STDERR);
   goto &Carp::confess;
 }
-
-use Data::Dumper::Interp qw/dvis vis visq avis hvis visnew addrvis u/;
 
 # Return ref to hash of effective options (READ-ONLY).
 # If the first argument is a hashref it is shifted off and
@@ -226,9 +224,9 @@ sub _fmt_list($) {
 #   0       1        2       3
 #   package filename linenum subname ...
 #
-use constant _CALLER_OVERRIDE_CHECK_OK =>
-     (defined(&Carp::CALLER_OVERRIDE_CHECK_OK)
-      && &Carp::CALLER_OVERRIDE_CHECK_OK);
+##use constant _CALLER_OVERRIDE_CHECK_OK =>
+##     (defined(&Carp::CALLER_OVERRIDE_CHECK_OK)
+##      && &Carp::CALLER_OVERRIDE_CHECK_OK);
 
 sub _nearest_call($$) {
   my ($state, $opts) = @_;
