@@ -401,7 +401,7 @@ sub __fmt_colspec_cx($$) {
 }
 sub __fmt_cx($) {
   my ($cx) = @_;
-  defined($cx) ? "cx $cx=".cx2let($cx) : "(undefined)"
+  defined($cx) ? "col ".cx2let($cx)." (cx $cx)" : "(undefined)"
 }
 
 # Format %colx keys "intelligently".  cx values are not shown for keys which are
@@ -1494,7 +1494,7 @@ sub _apply_to_rows($$$;$$$) {
     unless ref($code) eq "CODE";
   foreach (@$cxlist) {
     if ($_ < 0 || $_ >= $num_cols) {
-      croak $self->_methmsg("cx $_ is out of range")
+      croak $self->_methmsg(__fmt_cx($_)." is out of range")
     }
   }
 
@@ -1700,7 +1700,7 @@ sub _specs2cxdesclist {
         # Note: We can't use /s here!  The regex compiler has already
         # encapsulated /s or lack thereof in the compiled regex
         if ($title =~ /$spec/) {
-          push @results, [$cx, "cx $cx: regex matched title '$title'"];
+          push @results, [$cx, __fmt_cx($cx).": regex matched title '$title'"];
           $matched++;
         }
       }
