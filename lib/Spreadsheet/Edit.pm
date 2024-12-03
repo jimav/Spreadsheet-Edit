@@ -1,7 +1,8 @@
-# License: Public Domain or CC0
-# See https://creativecommons.org/publicdomain/zero/1.0/
-# The author, Jim Avera (jim.avera at gmail) has waived all copyright and
-# related or neighboring rights.  Attribution is requested but is not required.
+# License: http://creativecommons.org/publicdomain/zero/1.0/
+# (CC0 or Public Domain).  To the extent possible under law, the author,
+# Jim Avera (email jim.avera at gmail) has waived all copyright and
+# related or neighboring rights to this document.
+# Attribution is requested but not required.
 
 # Pod documentation is below (use perldoc to view)
 
@@ -3296,12 +3297,12 @@ Spreadsheet::Edit - Slice and dice spreadsheets, optionally using tied variables
   our ($Foo, $Bar, $Income);
 
   read_spreadsheet "file1.csv";
-  tie_column_vars;              # tie all vars that ever become valid
+  tie_column_vars ':all';       # tie all vars that ever become valid
 
   my $s1 = sheet undef ;        # Save ref to current sheet & forget it
 
   read_spreadsheet "file2.csv"; # Auto-creates sheet bc current is undef
-  tie_column_vars;
+  tie_column_vars ':all';
 
   my $s2 = sheet ;              # Save ref to second sheet
 
@@ -3559,7 +3560,7 @@ Forget alias(es).  Any masked COLSPECs become usable again.
 
 =head2 tie_column_vars VARNAME, ...
 
-Create tied package variables (scalars) for use during C<apply>.
+Create tied package global variables (scalars) for use during C<apply>.
 
 Each variable corresponds to a column, and reading or writing
 it accesses the corresponding cell in the row being visited during C<apply>.
