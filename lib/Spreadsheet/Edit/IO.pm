@@ -1183,6 +1183,7 @@ sub _slurp_ifnotslurped($$) {
   seek($fh, 0, SEEK_SET) or die $!;
   local $/ = undef;
   $$ref2octets = <$fh>//"";  # Now known to not have a BOM.
+                             # ^^^^ IS THIS REALLY TRUE???
 }
 sub _decode_slurped_data($$$;$) {
   my ($enc, $ref2octets, $start_pos, $check) = @_;
@@ -1379,7 +1380,7 @@ sub _preprocess($$) {
       }
     }
     else {
-      warn dvis '#### CSV DETECTED $opts->{quote_char} $opts->{sep_char}'
+      warn dvis '#### CSV DETECTED $opts->{quote_char} $opts->{sep_char} $start_pos'
         if $debug;
     }
   }#determine_csv_q_sep
@@ -1399,8 +1400,7 @@ sub _preprocess($$) {
       return unless $debug;
       $as_msg //= " as ".vis($col_formats[$cx])." format";
       if (length($thing) > 35) { $thing = substr($thing,0,32)."..."; }
-      @_ = ("Recognized ",$thing," in ", cxrx2sheetaddr($cx,$rx), $as_msg);
-      goto &btw
+      btwN 1, "Recognized $thing in ", cxrx2sheetaddr($cx,$rx), $as_msg;
     }
     CX:
     for my $cx (0..$max_cols-1) {
@@ -1471,7 +1471,12 @@ sub _preprocess($$) {
       $opts->{cvt_from} = $1;
     }
   }
-  $opts->{cvt_from} =~ s/^\.txt$/.csv/i if $opts->{cvt_from};
+  if ($opts->{cvt_from}) {
+    $opts->{cvt_from} = lc($opts->{cvt_from}); # CSV -> csv
+    croak ivis 'cvt_from must be a suffix without a dot (not $opts->{cvt_from})'
+      if $opts->{cvt_from} =~ /[^a-z]/;
+    $opts->{cvt_from} = "csv" if $opts->{cvt_from} eq "txt";
+  }
 
   # Detect input file format and, if CSV, encoding etc.
   my $rows;
