@@ -339,9 +339,9 @@ our @sane_CSV_write_options = (
 my %Saved_Sigs;
 sub _sighandler {
   if (! $Saved_Sigs{$_[0]} or $Saved_Sigs{$_[0]} eq 'DEFAULT') {
-    # The user isn't catching this, so the process will abort without
-    # running destructors: Call exit instead
-    warn "($$)".__PACKAGE__." caught signal $_[0], exiting\n";
+    # The user isn't catching this, so the process would have aborted
+    # without running destructors: Call exit instead
+    ##warn "($$)".__PACKAGE__." caught signal $_[0], exiting\n";
     Carp::cluck "($$)".__PACKAGE__." caught signal $_[0], exiting\n";
     exit 1;
   }
@@ -350,8 +350,10 @@ sub _sighandler {
   oops "Default (or user-defined) sig $_[0] action was to ignore!";
 }
 sub _signals_guard() {
-  %Saved_Sigs = ( map{ ($_ => ($SIG{$_} // undef)) } qw/HUP INT QUIT TERM/ );
-  $SIG{HUP} = $SIG{INT} = $SIG{QUIT} = $SIG{TERM} = \&_sighandler;
+  foreach my $name (qw/HUP INT QUIT TERM/) {
+    $Saved_Sigs{$name} = $SIG{$name};
+    $SIG{$name} = \&_sighandler;
+  }
   return guard { @SIG{keys %Saved_Sigs} = (values %Saved_Sigs) }
 }
 
