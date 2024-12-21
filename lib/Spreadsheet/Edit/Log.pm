@@ -91,7 +91,8 @@ sub _btwTN($$@) {
     $sep = " ⇐ ";
   }
   elsif (ref($N) eq 'ARRAY' && all{defined} @$N) {
-    @levels = @$N
+    @levels = sort { $a <=> $b } @$N;
+    $sep = " ⇐ " if $#levels == ($levels[-1] - $levels[0]);
   }
   else {
     confess "Invalid N arg to btwN: $N"
@@ -136,8 +137,8 @@ BEGIN {
 sub oops(@) {
   my $pkg = caller;
   my $pfx = "\nOOPS";
-  $pfx .= " in pkg '$pkg'" unless $pkg eq 'main';
-  $pfx .= ":\n";
+  #$pfx .= " in pkg '$pkg'" unless $pkg eq 'main';
+  $pfx .= ": ";
   if (defined(&Spreadsheet::Edit::logmsg)) {
     # Show current apply sheet & row if any.
     @_=($pfx, &Spreadsheet::Edit::logmsg(@_));

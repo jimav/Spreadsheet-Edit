@@ -27,17 +27,23 @@ sub import {
   # Import Spreadsheet::Edit and the usual variables for the user
   Spreadsheet::Edit->import::into($callpkg, ':all');
 
-  # Load the spreadsheet
+  # We specially handle option 'verbose' (without 'debug') to only show
+  # the spreadsheet name, rather than tracing all the calls.
+  #
   my $opthash = ref($_[0]) eq "HASH" ? shift(@_) : {};
 
-  # Create new sheet, setting verbose, etc. from options
-  my $sh = Spreadsheet::Edit->new(
-             map{ exists($opthash->{$_}) ? ($_ => delete $opthash->{$_}) : () }
-             qw/verbose silent debug/
-           );
+#use Data::Dumper::Interp;
+  my $my_verbose = !$opthash->{debug} && delete($opthash->{verbose});
+
+  # Create new sheet, possibly specifying title_rx
+  my $sh = Spreadsheet::Edit->new(%$opthash);
 
   # Read the content
   $sh->read_spreadsheet($opthash, @_);
+
+  if ($my_verbose) {
+    warn "> Read ",$sh->data_source(),"\n";
+  }
 
   # Tie variables in the caller's package
   $sh->tie_column_vars({package => $callpkg}, ':all', ':safe');
