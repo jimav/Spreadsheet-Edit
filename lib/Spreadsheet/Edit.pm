@@ -222,7 +222,7 @@ our @CARP_NOT = qw(
 
 use Scalar::Util qw(looks_like_number openhandle reftype refaddr blessed);
 use List::Util qw(min max sum0 first any all pairs pairgrep);
-use Path::Tiny qw/path/;
+use Path::Tiny 0.146 qw/path/;
 #use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename dirname fileparse);
 use File::Find ();

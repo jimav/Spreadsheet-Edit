@@ -36,7 +36,9 @@ sub import {
   my $my_verbose = !$opthash->{debug} && delete($opthash->{verbose});
 
   # Create new sheet, possibly specifying title_rx
-  my $sh = Spreadsheet::Edit->new(%$opthash);
+  my $sh = Spreadsheet::Edit->new(
+         map{ $_ => $opthash->{$_} } qw/verbose silent debug/
+  );
 
   # Read the content
   $sh->read_spreadsheet($opthash, @_);
@@ -112,7 +114,7 @@ specified, the title row is auto-detected.
 
 A fatal error occurs if a column letter ('A', 'B' etc.), a title,
 or identifier derived from a title (that is, any COLSPEC)
-clashes with an object already existing in the caller's package
+clashes with something already existing in the caller's package
 or in package "main".
 
 =head1 SEE ALSO

@@ -36,7 +36,7 @@ use File::Copy ();
 use File::Copy::Recursive ();
 use File::Glob qw/bsd_glob/;
 
-use Path::Tiny qw/path/;
+use Path::Tiny 0.146 qw/path/;
 
 # Path::Tiny OBVIATES NEED for many but we still need this
 use File::Spec ();
