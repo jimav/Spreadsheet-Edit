@@ -2933,7 +2933,7 @@ sub write_spreadsheet(*;@) {
   # First convert to a temporary .csv named "<outputbasename>.csv"
   # so that the 'sheet name' in the spreadsheet will be <outputbasename> .
   #
-  my $tdir = Path::Tiny->tempdir(); # auto-deleted when destroyed
+  my $tdir = Path::Tiny->tempdir("_write_spreadsheet_tdir_XXXXX"); # auto-deleted when destroyed
   my $csvpath = $tdir->child( path($outpath)->basename(qr/\.\w+$/).".csv" );
   { local $$self->{verbose} = 0;
     $self->write_csv($csvpath->canonpath,
