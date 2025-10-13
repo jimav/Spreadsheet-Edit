@@ -1,6 +1,8 @@
 Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, and/or Spreadsheet::Edit::Log
 
-1000.027 : Support convert_spreadsheet to "txt" (fixed-width-field csv)
+1000.027 : Add OPTION subname_override to log_call and friends.
+           Initial support for csv -> txt (fixed-width-fields); not fully working yet.
+           Doc tweaks.
 1000.026 : Require Path::Tiny 0.146; fix Preload glitch with title_rx
 1000.025 : Require Data::Dumper::Interp 7.012 to get portability fixes
 1000.023 : Yet more debug code to diagnose Windows smoker failures...

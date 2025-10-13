@@ -218,6 +218,7 @@ our @CARP_NOT = qw(
                    Spreadsheet::Edit::IO
                    Tie::Indirect::Array Tie::Indirect::Hash
                    Tie::Indirect::Scalar
+                   Spreadsheet::Edit::Magicrow;
                   );
 
 use Scalar::Util qw(looks_like_number openhandle reftype refaddr blessed);
@@ -296,8 +297,8 @@ sub title2ident($) {
   s/^\s+//;  s/\s+$//;
   s/\W/_/g;
   s/^(?=\d)/_/;
-  # Also avoid the legal identifiers "_" and "ARGV"
-  $_ = "_".$_ if $_ eq "ARGV" || $_ eq "_";
+  # Prepend underscore to Perl's reserved identifiers.
+  $_ = "_".$_ if __is_unindexed_title($_, 0);
   $_
 }
 
@@ -475,14 +476,14 @@ sub _fmt_colx(;$$) {
 
 # Is a title a special symbol, looks like a cx number, or is a Perl
 # built-in variable?
-sub __unindexed_title($$) {
+sub __is_unindexed_title($$) {
   my ($title, $num_cols) = @_;
   oops unless defined $title;
 my $r =
   $title eq ""
   || $title =~ /^\W$/    # ^ or $ or any single punctuation or control-char
   || $title =~ /\^\w+$/  # ^Var to not confuse w Perl "control-character" names
-  || $title =~ /^(?:ARGV|ARGVOUT|_)$/
+  || $title =~ /^(?:ARGV|ARGVOUT|_|REGERROR|REGMARK|AUTOLOAD)$/
   || $title =~ /::/                    # package::qualified::name
   || $title =~ /^[0-9]$/               # $0 and regex $1 $2 .. $9
                                        # (regardless of max cx)
@@ -494,7 +495,7 @@ $r
 }
 sub _unindexed_title { #method for use by tests
   my $self = shift;
-  __unindexed_title(shift(), $$self->{num_cols});
+  __is_unindexed_title(shift(), $$self->{num_cols});
 }
 
 # Return (normals, unindexed) where each is [title => cx, ...] sorted by cx
@@ -516,7 +517,7 @@ sub _get_usable_titles {
       next;
     }
     $seen{$title} = $cx;
-    if (__unindexed_title($title, $num_cols)) {
+    if (__is_unindexed_title($title, $num_cols)) {
       push @unindexed, [$title, $cx];
     } else {
       push @normals, [$title, $cx];
@@ -1259,9 +1260,10 @@ sub _tiecell_helper {
 
 sub _all_valid_idents {
   my $self = shift;
+  my $num_cols = $$self->{num_cols};
   my %valid_idents;
   foreach (keys %{ $$self->{colx} }) {
-    if (/^(?:REGERROR|REGMARK|AUTOLOAD)$/) {
+    if (__is_unindexed_title($_, $num_cols)) {
       $self->_carponce("WARNING: Column key ",visq($_)," conflicts with a Perl built-in; variable will not be tied.\n");
       next;
     }
@@ -1272,11 +1274,8 @@ sub _all_valid_idents {
 
 sub tie_column_vars(;@) {
   my ($self, $opts) = &__self_opthash;
-  # Any remaining args specify variable names matching
+  # Any remaining args are :all or variable names matching
   # alias names, either user-defined or automatic.
-
-  croak "tie_column_vars without arguments (did you intend to use ':all'?)"
-    unless @_;
 
   local $$self->{silent}  = $opts->{silent} // $$self->{silent};
   local $$self->{verbose} = $opts->{verbose} // $$self->{verbose};
@@ -1287,7 +1286,7 @@ sub tie_column_vars(;@) {
   my (%tokens, @varnames);
   foreach (@_) { if (/:/) { $tokens{$_} = 1 } else { push @varnames, $_ } }
   foreach (@varnames) {
-    croak "Invalid variable name '$_'\n" unless /^\$?\w+$/;
+    croak "Invalid variable name '$_'\n" unless /^\$?[A-Za-z]\w*$/;
     s/^\$//;
   }
 
@@ -1458,9 +1457,6 @@ sub _logmethretifv { # args: [INPUTS], [OUTPUTS]
 }
 #-----------------------------------------------
 
-my $__FILE__ = __FILE__;
-my $__PACKAGE__ = __PACKAGE__;
-
 sub _call_usercode($$$) {
   my ($self, $code, $cxlist) = @_;
 
@@ -1471,16 +1467,35 @@ sub _call_usercode($$$) {
     }
   } else {
     eval{ $code->() };
-    ##Simplify backtraces
-    #@_ = ();
-    #goto &$code;
   }
-  if ($@) { # filter out our internal stuff to make easier to read
-    { local $_;
-      $@ =~ s/^[^\n]* called \Kat $__FILE__ line .*?(?=\s*${__PACKAGE__}::\w*apply)/from [apply internals]/msg
-        unless $$self->{debug};
+  if ($@) {
+    local $_ = $@;
+    unless ($$self->{debug}) {
+      # Simplify a backtrace to omit our internal frames between the user's
+      # call to apply* (or join_cols) and the call to the user's callback.
+      # A typical Carp::confess traceback looks like this:
+      #   user message lines
+      #   ...user frame(s) inside the apply callback
+      #   users_callback_function called at lib/Spreadsheet/Edit.pm line nnn
+      #
+      #   ### this part is replaced by '[apply internals]'
+      #   eval {...} called at lib/Spreadsheet/Edit.pm line xxx [the above eval]
+      #   Spreadsheet::Edit::_call_usercode(...) called at filename line nnn
+      #   ...internal frame(s)...
+      #
+      #   Spreadsheet::Edit::public_method(...) called at userfilename line nnn
+      #   outer user frame(s)...
+      #
+      # The last internal frame will be the eval{...} above.
+      state $__FILE__ = __FILE__;
+      state $__PACKAGE__ = __PACKAGE__;
+      #warn "### MMM before: $_\n--{end}--\n";
+      s/^(\h*)eval \{.*?\} called at $__FILE__ line .*?\R(\h*${__PACKAGE__}::[a-z])/${1}[apply internals]\n$2/msg
+      #  or warn "!!!\n","(*_call_usercode REGEX DID NOT MATCH*)\n(__FILE__=$__FILE__)\n(__PACKAGE__=$__PACKAGE__)\n$@\n----------\n"
+      ;
+      #warn "### MM2 after : $_\n--{end}--\n";
     }
-    die "$@\n";
+    die "$_\n";
   }
 }
 
@@ -1916,7 +1931,7 @@ sub _autodetect_title_rx {
   my @required_specs = $opthash->{required}
                          ? to_array($opthash->{required}) : ();
   croak "undef value in {required}" if grep{! defined} @required_specs;
-  @required_specs = grep{ !__unindexed_title($_, $num_cols) } @required_specs;
+  @required_specs = grep{ !__is_unindexed_title($_, $num_cols) } @required_specs;
 
   my $min_rx   = __validate_nonnegi($opthash->{min_rx}//0, "min_rx");
   my $max_rx   = __validate_nonnegi($opthash->{max_rx}//$min_rx+3, "max_rx");
@@ -2374,8 +2389,7 @@ sub apply(&;@) {
 
   my $first_rx = max(($hash->{title_rx} // -1)+1, $hash->{first_data_rx}//0);
 
-  @_ = ($self, $code, \@cxs, undef, $first_rx, $hash->{last_data_rx});
-  goto &_apply_to_rows
+  _apply_to_rows($self, $code, \@cxs, undef, $first_rx, $hash->{last_data_rx});
 }
 
 # apply_all {code}, colspec*
@@ -2388,8 +2402,7 @@ sub apply_all(&;@) {
   log_methcall $self, [\"rx 0..",$#{$hash->{rows}},
                        @cxs > 0 ? \(" cxs=".avis(@cxs)) : ()]
     if $$self->{verbose};
-  @_ = ($self, $code, \@cxs);
-  goto &_apply_to_rows
+  _apply_to_rows($self, $code, \@cxs);
 }
 
 sub __arrify_checknotempty($) {
@@ -2413,8 +2426,7 @@ sub apply_torx(&$;@) {
   log_methcall $self, [\vis($rxlist_arg),
                        @cxs > 0 ? \(" cxs=".avis(@cxs)) : ()]
     if $$self->{verbose};
-  @_ = ($self, $code, \@cxs, $rxlist);
-  goto &_apply_to_rows
+  _apply_to_rows($self, $code, \@cxs, $rxlist);
 }
 
 # apply_exceptrx {code} [rx list], colspec*
@@ -2435,8 +2447,7 @@ sub apply_exceptrx(&$;@) {
   }
   my %exrxlist = map{ $_ => 1 } @$exrxlist;
   my $rxlist = [ grep{ ! exists $exrxlist{$_} } 0..$max_rx ];
-  @_ = ($self, $code, \@cxs, $rxlist);
-  goto &_apply_to_rows
+  _apply_to_rows($self, $code, \@cxs, $rxlist);
 }
 
 # split_col {code} oldcol, newcol_start_position, new titles...
@@ -3051,7 +3062,7 @@ use Carp;
 our @CARP_NOT = qw(Tie::Indirect Tie::Indirect::Array
                    Tie::Indirect::Hash Tie::Indirect::Scalar
                    Tie::Array Tie::Hash
-                   Spreadsheet::Edit);
+                   Spreadsheet::Edit Spreadsheet::Edit::Magicrow);
 use Data::Dumper::Interp 6.009 qw/visnew
                     vis  viso  avis  alvis  ivis  dvis  hvis  hlvis
                     visq visoq avisq alvisq ivisq dvisq hvisq hlvisq
@@ -3115,7 +3126,7 @@ package
   Spreadsheet::Edit::Magicrow;
 
 use Carp;
-our @CARP_NOT = qw(Spreadsheet::Edit);
+our @CARP_NOT = ('Spreadsheet::Edit');
 use Scalar::Util qw(weaken blessed looks_like_number);
 sub oops(@) { goto &Spreadsheet::Edit::oops }
 use Data::Dumper::Interp;
@@ -3148,14 +3159,25 @@ sub _cellref {
   my $cx = $colx->{$key};
 
   if (! defined $cx) {
-    exists($colx->{$key})
-      or croak "'$key' is an unknown COLSPEC in ",$$sheet->{data_source},
-               "\nThe valid keys are:\n", $sheet->_fmt_colx();
-    # Undef colx results from alias({optional => TRUE},...) which failed,
-    # or from an alias which became invalid because the column was deleted.
-      croak "Attempt to write to 'optional' alias '$key' which is currently NOT DEFINED"
-        if $mutating;
-    return \undef # Reading such a column returns undef
+    # No cx is defined for this key:
+    #   If the identifier is completely unknown then an exception is thrown.
+    #
+    #   If the ident is defined but has an undef cx then it is an 'optional'
+    #   alias not currently valid (creaded with alias({optional => TRUE},...)),
+    #   or any alias which became invalid because the column was deleted
+    #   or renamed; reading returns undef but writing throws.
+    #
+    my @carpargs;
+    if (exists $colx->{$key}) {
+      return \undef unless $mutating; # Reading such a column returns undef
+      @carpargs = ("Attempt to write to alias '$key' which is currently NOT DEFINED");
+    } else {
+      @carpargs = ("'$key' is an unknown COLSPEC in ", $$sheet->{data_source},
+                   "\nThe valid keys are:\n", $sheet->_fmt_colx());
+    }
+    if (@carpargs) {
+      croak(@carpargs);
+    }
   }
   $cx <= $#{$cells}
     // croak "BUG?? key '$key' maps to cx $cx which is out of range!";
@@ -3220,7 +3242,8 @@ Spreadsheet::Edit - Slice and dice spreadsheets, optionally using tied variables
 
   # Print the data
   printf "%20s %8s %8s %-13s %s\n", "Name","A/N","Income","Phone","Email";
-  apply {
+  apply { # execute a block for each data row, with %crow aliased
+          # to the cells in the "current row".
     printf "%20s %8d %8.2f %-13s %s\n",
            $crow{Name},              # this key is an explicit alias
            $crow{"Account Number"},  #            ... actual title
@@ -3276,7 +3299,7 @@ Spreadsheet::Edit - Slice and dice spreadsheets, optionally using tied variables
   use POSIX qw(strftime);
   apply {
     return
-      if $Income < 100000;  # not in our audience
+      if $Income < 500000;  # not in our audience
     open SENDMAIL, "|sendmail -t -oi" || die "pipe:$!";
     print SENDMAIL "To: $FName $LName <$Email>\n";
     print SENDMAIL strftime("Date: %a, %d %b %y %T %z\n", localtime(time));
@@ -3299,12 +3322,12 @@ Spreadsheet::Edit - Slice and dice spreadsheets, optionally using tied variables
   read_spreadsheet "file1.csv";
   tie_column_vars ':all';       # tie all vars that ever become valid
 
-  my $s1 = sheet undef ;        # Save ref to current sheet & forget it
+  my $s1 = sheet undef ;        # forget current sheet but save a ref to it
 
   read_spreadsheet "file2.csv"; # Auto-creates sheet bc current is undef
   tie_column_vars ':all';
 
-  my $s2 = sheet ;              # Save ref to second sheet
+  my $s2 = sheet ;              # Just save a ref to the 2nd sheet
 
   print "$Foo $Bar $Income\n";  # these refer to $s2, the current sheet
 
@@ -3389,18 +3412,18 @@ during C<apply()>.
 
 Data tables can come from Spreadsheets, CSV files, or your code.
 
-A table in memory (that is, a C<sheet> object) contains an array of rows,
+A table in memory (a C<sheet> object) contains an array of rows,
 each of which is an array of cell values.
 
 Rows are overloaded to act as either arrays or hashes; when used as a hash,
-cells are accessed by name (e.g. column titles), or letter code ("A", "B" etc.)
+cells are accessed by name (e.g. column titles, letter codes "A", "B" etc.)
 
 The usual paradigm is to iterate over rows applying a function
 to each, vaguely inspired by 'sed' and 'awk' (see C<apply> below).
 Random access is also supported.
 
-Note: Only cell I<values> are handled; there is no provision
-for processing formatting information from spreadsheets.
+Note: Only cell I<values> are handled; formatting information is not
+processed.
 The author has a notion to add support for formats,
 perhaps integrating with Spreadsheet::Read and Spreadsheet::Write
 or the packages they use.  Please contact the author if you want to help.
@@ -3426,8 +3449,7 @@ package-global "current sheet" object, which can be switched at will.
 OO I<Methods> operate on the C<sheet> object they are called on.
 
 Functions which operate on the "current sheet" have
-corresponding OO methods with the same names and arguments
-(except that method arguments must be enclosed by parenthesis).
+corresponding OO methods with the same names and arguments.
 
 =head1 TIED COLUMN VARIABLES
 
@@ -3445,7 +3467,8 @@ For example in
 
    read_spreadsheet {sheetname => 'Sheet1'}, '/path/to/file.xlsx';
 
-the {...} hash is optional and specifies the sheet name.
+the {...} hash is optional and specifies which sheet to read
+from a possibly-multisheet workbook.
 
 =head2 read_spreadsheet CSVFILEPATH
 
@@ -3478,10 +3501,9 @@ Auto-detection options:
 =back
 
 The first row is used which includes the C<required> title(s), if any,
-and has non-empty titles in all columns, or columns
-C<first_cx> through C<last_cx>.
+and has non-empty titles in columns C<first_cx> through C<last_cx>.
 
-Or to specify the title row explicitly:
+To explicitly specify the title row:
 
 =over 2
 
@@ -3530,7 +3552,7 @@ This problem does not occur with .csv files
 
 Create alternate identifiers for specified columns.
 
-Each IDENT, which must be a valid Perl identifier, will henceforth
+Each IDENT (a valid Perl identifier) will henceforth
 refer to the specified column even if the identifier is the same
 as the title or letter code of a different column.
 
@@ -3538,13 +3560,13 @@ C<$row{IDENT}> and a tied variable C<$IDENT> will refer to the specified column.
 
 Aliases automatically track the column if it's position changes.
 
-Regular Expressions are matched against titles only, and an exception is
-thrown if more than one title matches.
-
-Otherwise, COLSPECs may be titles, existing alias names, column letters, etc.
+COLSPECs may be titles, existing alias names, column letters, etc.
 (see "COLUMN SPECIFIERS" for details).
 
-The COLSPEC is evaluated before the alias is created, so
+Regular Expressions are matched against
+titles only and an exception is thrown if more than one title matches.
+
+The left-hand side is evaluated before the alias is created, so
 
    alias B => "B";
 
@@ -3565,11 +3587,10 @@ Create tied package global variables (scalars) for use during C<apply>.
 Each variable corresponds to a column, and reading or writing
 it accesses the corresponding cell in the row being visited during C<apply>.
 
-The '$' may be omitted in the VARNAME arguments to C<tie_column_vars>;
+A '$' sigl is optional in VARNAME arguments.
 
-You must separately declare these variables with C<our $NAME>,
-except in the special case described
-at "Use in BEGIN() or module import methods".
+Normally you must separately declare these variables with C<our $NAME>
+(see "Use in BEGIN() or module import methods" for the exceptions).
 
 The variable name itself implies the column it refers to.
 
@@ -3599,7 +3620,6 @@ was 'current' when C<tie_column_vars> was called with a particular name;
 it only matters that the name of a tied variable is a valid COLSPEC in
 the 'current sheet' when that variable is referenced
 (otherwise a read returns I<undef> and a write throws an exception).
-[*Need clarification*]
 
 B<{OPTIONS}> may specify:
 
@@ -3631,9 +3651,8 @@ Although convenient this is B<insecure> if package (e.g "our") variables are
 used for any other purpose
 because they could be clobbered by malicious spreadsheet titles
 (lexical "my" variables are always safe).
-Perl's built-in punctuation variables and $ARGV can not be clobbered because
-those names are always excluded as column identifiers (see COLSEPCs).
-However names from C<use English;> are not similarly protected!
+Perl's built-in punctuation variables and $ARGV etc. are always excluded
+as column identifiers but names from C<use English;> are not similarly protected!
 
 If VARNAMES are also specified, those variables will be tied
 immediately even if not yet usable; an exception occurs if a tied variable
@@ -3837,7 +3856,7 @@ RETURNS: A list of the previous row indicies of all rows in the sheet.
 =head2 sort_indicies {rx cmp function} $first_rx, $last_rx
 
 Like C<sort_rows> but returns [ref to array of rx values] indicating
-the sorted row order without actually chaning the sheet (rows are not moved).
+the sorted row order without actually changing the sheet (rows are not moved).
 
 =head2 rename_cols COLSPEC, "new title", ... ;
 

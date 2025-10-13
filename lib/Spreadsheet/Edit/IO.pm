@@ -834,6 +834,7 @@ sub _convert_using_openlibre($$$) {
       # uses the csv filter but with "FIX"ed width fields (no separators
       # or quotes).  Note that we are converating a *spreadsheet* input, not
       # a writer document.
+      # 6/12/2025: csv --> txt IS NOT WORKING (truncates wide columns)
       my $filter_name = $suf2ofilter->{$opts->{cvt_to}} or oops;
       #my $enc = $opts->{output_encoding};
       my ($enc) = ($opts->{output_binmode} =~ /:encoding\((.*?)\)/) or oops;
@@ -1550,6 +1551,7 @@ sub _preprocess($$) {
   }
 
   if ($opts->{cvt_to} =~ /^(?:csv|txt)$/) {
+    # 6/12/2025: csv --> txt IS NOT WORKING (truncates wide columns)
     if ($opts->{output_encoding}) {
       croak "Only one of {output_encoding} or {output_binmode} may be specified"
         if $opts->{output_binmode};
