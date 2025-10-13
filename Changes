@@ -2,6 +2,7 @@ Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, and/or Spreadsheet::Edit::L
 
 1000.027 : Add OPTION subname_override to log_call and friends.
            Initial support for csv -> txt (fixed-width-fields); not fully working yet.
+           Removed undocumented tie_col_variables :safe option.
            Doc tweaks.
 1000.026 : Require Path::Tiny 0.146; fix Preload glitch with title_rx
 1000.025 : Require Data::Dumper::Interp 7.012 to get portability fixes

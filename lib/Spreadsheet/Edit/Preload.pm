@@ -48,7 +48,7 @@ sub import {
   }
 
   # Tie variables in the caller's package
-  $sh->tie_column_vars({package => $callpkg}, ':all', ':safe');
+  $sh->tie_column_vars({package => $callpkg}, ':all');
 
   # Make it the 'current sheet' in the caller's package
   Spreadsheet::Edit::sheet( {package => $callpkg}, $sh );
