@@ -18,5 +18,6 @@ git show <tag-#-gitobj>:<filepath> prints specified version of that file
 
 https://cpantesters.org/distro/D/Spreadsheet-Edit.html
 
-http://matrix.cpantesters.org/?dist=Spreadsheet-Edit
+##http://matrix.cpantesters.org/?dist=Spreadsheet-Edit
+https://fast2-matrix.cpantesters.org/?dist=Spreadsheet-Edit
 

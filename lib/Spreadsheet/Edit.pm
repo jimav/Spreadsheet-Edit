@@ -300,7 +300,7 @@ sub title2ident($) {
   s/^\s+//;  s/\s+$//;
   s/\W/_/g;
   s/^(?=\d)/_/;
-  # Prepend underscore to Perl's reserved identifiers.
+  # Prepend underscore to reserved identifiers.
   $_ = "_".$_ if __is_unindexed_title($_, 0);
   $_
 }
@@ -482,11 +482,17 @@ sub _fmt_colx(;$$) {
 sub __is_unindexed_title($$) {
   my ($title, $num_cols) = @_;
   oops unless defined $title;
+  ### FIXME BUG(?): I think colx only needs to exclude titles ^ and $
+  ###  (which are reserved by Spreadsheet::Edit to mean 1st & last col)
+  ###  and numbers which exceed maxcx; all other titles should be
+  ###  unambiguous as %colx keys, however...
+  ###  --> Perl's reserved names must still be excluded as tied variable
+  ###      names; this would need a separate check for _all_valid_idents()
 my $r =
   $title eq ""
   || $title =~ /^\W$/    # ^ or $ or any single punctuation or control-char
   || $title =~ /\^\w+$/  # ^Var to not confuse w Perl "control-character" names
-  || $title =~ /^(?:ARGV|ARGVOUT|_|REGERROR|REGMARK|AUTOLOAD)$/
+  || $title =~ /^(?:ARGV|ARGVOUT|_|REGERROR|REGMARK|AUTOLOAD|a|b)$/
   || $title =~ /::/                    # package::qualified::name
   || $title =~ /^[0-9]$/               # $0 and regex $1 $2 .. $9
                                        # (regardless of max cx)

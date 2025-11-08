@@ -1,6 +1,8 @@
 Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, and/or Spreadsheet::Edit::Log
 
 1000.029 : Avoid showing any internal frames in tracebacks involving apply* etc.
+           Disallow "a" and "b" as tied variable names (to avoid clashing with Perl)
+           Fix bug finding libreoffice executable when following symlinks
 1000.028 : Colorize btw and oops messages (import :nocolor to disable)
 1000.027 : Add OPTION subname_override to log_call and friends.
            Initial support for csv -> txt (fixed-width-fields); not fully working yet.

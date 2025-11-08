@@ -426,7 +426,7 @@ sub openlibreoffice_path() {
   }
 
   my $debug = $ENV{SPREADSHEET_EDIT_FINDDEBUG};
-  my sub _Findvarsmsg() {
+  my sub _fmt_Find_names() {
     if (u($_) eq u($File::Find::name) && u($_) eq u($File::Find::fullname)) {
       return qsh($_)."\n"
     }
@@ -447,27 +447,31 @@ sub openlibreoffice_path() {
       my $start_dir_depth = scalar(() = path($start_dir)->stringify =~ m#(/)#g);
       File::Find::find(
         { wanted => sub{
-            # Undef fullname OR invalid "_" filehandle implies a broken symlink,
-            #   see https://github.com/Perl/perl5/issues/21122
+            # Undef fullname # OR invalid "_" filehandle
+            # (filetest ops fail with $! = "Bad file descriptor")
+            # implies a broken symlink, see https://github.com/Perl/perl5/issues/21122
+            #
             # Zero size on *nix implies /proc or similar; do not enter.
             # File::Find::fullname unreadable => followed link to inaccessable.
-            # (The initial "_" stat may be invalid, so "-l _" is useless)
+            # (The initial "_" stat may be invalid in that case, so "-l _" is useless)
             $! = 0;
             # https://github.com/Perl/perl5/issues/21143
             my $fullname = $File::Find::fullname;
-            if (!defined($fullname) && $is_MSWin) {
-                warn "# _ MSWin undef fullname! ",_Findvarsmsg() if $debug;
-                stat($_); # lstat was not done. Grr...
+            if (!defined($fullname)) {
+              if ($is_MSWin) {
+                warn "# _ MSWin undef fullname! ",_fmt_Find_names() if $debug;
                 $fullname = $File::Find::name;
+                stat($_); # calling stat (not lstat) to find referent if symlink
                 unless (-d _) {
                   $File::Find::prune = 1; # in case it really is a dir
                   return;
                 }
-            } else {
-              unless (-d _ or -l _) {
-                warn "# _ notdir/symlink: ",_Findvarsmsg() if $debug;
-                $File::Find::prune = 1; # in case it really is
-                return;
+              } else {
+                unless (-d _ or -l _) {
+                  warn "# undef fullname and not dir or symlink! : ",_fmt_Find_names() if $debug;
+                  $File::Find::prune = 1; # in case it really is
+                  return;
+                }
               }
             }
             if (
@@ -476,17 +480,17 @@ sub openlibreoffice_path() {
                 || !defined($fullname) # broken link, per docs
                 || (! -r _) # unreadable item or invalid "_" handle
                             # https://github.com/Perl/perl5/issues/21122
-                || (! -x _)   # or unsearchable dir
+                || (! -x _)   # unsearchable dir
                 #|| (!$is_MSWin && (stat(_))[7] == 0) # zero size ==> /proc etc.
                 || (! -s _ && !$is_MSWin) # zero size ==> /proc etc.
                 || /\$/ # $some_windows_special_thing$
                 || ! -r $fullname # presumably a symlink to unreadable
                ) {
-              warn "# PRUNING ",_Findvarsmsg() if $debug;
+              warn "# PRUNING ",_fmt_Find_names() if $debug;
               $File::Find::prune = 1;
               return
             }
-            warn "# DIR: ",_Findvarsmsg() if $debug;
+            warn "# DIR: ",_fmt_Find_names() if $debug;
             # Maximum depth: /*/*/<unpackparent>/opt/libreofficeXXX/program/
             my $path = path($_); # full path because of 'no_chdir'
             my $depth = scalar(() = $path->stringify =~ m#(/)#g);
@@ -498,7 +502,7 @@ sub openlibreoffice_path() {
                 # eval because I'm suspicious of the glob on Windows
                 my @hits; eval{ @hits = sort +bsd_glob($glob, GLOB_NOCASE) };
                 if (@hits) {
-                  # On windows, use soffice.com not .exe because it writes
+                  # On windows, use soffice.com not .exe because .com writes
                   # messages to stdout not a window.  See https://help.libreoffice.org/7.5/en-GB/text/shared/guide/start_parameters.html?&DbPAR=SHARED&System=WIN
                   my $path = (first{ /soffice\.com$/ } @hits) ||
                              (first{ /soffice$/      } @hits);
