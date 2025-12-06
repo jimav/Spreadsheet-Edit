@@ -505,7 +505,7 @@ sub openlibreoffice_path() {
         ||
         s/[a-z]+(\d.*)/0$1/; # 1.2.3.alpha2 => 1.2.3.02
       }
-      warn dvis '## $v1 $v2\n' if $debug;
+      #warn dvis '## $v1 $v2\n' if $debug;
       version->parse($v1) <=> version->parse($v2)
     } @candidates;
 
