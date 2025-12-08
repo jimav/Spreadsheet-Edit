@@ -11,10 +11,10 @@ our @ISA = ('Outer');
 use Data::Dumper::Interp;
 use Spreadsheet::Edit::Log
   qw/fmt_call log_call nearest_call abbrev_call_fn_ln_subname/,
-  ':btw=$lno/$fname/$pkg/$package';
+  ':btw=l=$lno/fn=$fname/pk=$pkg/p=$package';
 
-sub new { my $class=shift; bless {color => $_[0]}, $class }
-sub get { my $self=shift; $self->{color} }
+sub new { my $class=shift; bless {tag => $_[0]}, $class }
+sub get { my $self=shift; $self->{tag} }
 sub _pvt_noretval {
   my $self = shift;
   log_call {self => $self}, \@_;
@@ -65,18 +65,22 @@ package main;
 use Spreadsheet::Edit::Log qw/nearest_call abbrev_call_fn_ln_subname/;
 my $myFILE_basename = basename(__FILE__);
 
-my $obj = Outer->new("red");
-my $obj2 = Outer->new("blue");
+my $obj = Outer->new("obj");
+my $obj2 = Outer->new("obj2");
 
+my $checklog_callback_lno = (__LINE__) + 4;
 sub checklog(&$;$$) {
   my ($code, $exptail, $test_label, $nohead) = @_;
+  my ($out, $err) = my_capture {
+                      $code->()
+  };
   my ($file, $lno) = (caller(0))[1,2];
   $file = basename($file);
   my $exphead = $nohead ? "" : ">[${file}:${lno}] ";
   my $exp = ref($exptail) ? qr/\A\Q$exphead\E$exptail\n\z/
                           : $exphead.$exptail."\n";
   chomp( $test_label ||= $exp );
-  my ($out, $err) = my_capture { $code->() };
+  #my ($out, $err) = my_capture { $code->() };
   @_ = ($err, $exp, $test_label);
   unless ($out eq "") {
     &Test2::V0::like;
@@ -86,6 +90,7 @@ sub checklog(&$;$$) {
   }
   goto &Test2::V0::like;  # show caller's line number
 }
+note dvis '### $checklog_callback_lno\n';
 
 #### Test nearest_call & abbrev_call_fn_ln_subname used directly ####
 
@@ -108,10 +113,10 @@ checklog { &interm }
 
 #### Test log_call using our custom fmt_object callback ####
 
-checklog { $obj->meth_noretval; } qr/Inner.*\[red\].meth_noretval/ ;
-checklog { $obj2->meth_noretval } qr/Inner.*\[blue\].meth_noretval/ ;
+checklog { $obj->meth_noretval; } qr/Inner.*\[obj\].meth_noretval/ ;
+checklog { $obj2->meth_noretval } qr/Inner.*\[obj2\].meth_noretval/ ;
 checklog { $obj2->meth_noretval("A") } '.meth_noretval "A"' ;
-checklog { $obj->meth_noretval(0,"0") } qr/Inner.*\[red\].meth_noretval 0,"0"/;
+checklog { $obj->meth_noretval(0,"0") } qr/Inner.*\[obj\].meth_noretval 0,"0"/;
 checklog { $obj->meth_noretval([3..7]) } '.meth_noretval [3,4,5,6,7]' ;
 
 checklog { $obj->meth_1retval } '.meth_1retval() ==> 42' ;
@@ -124,7 +129,7 @@ checklog { &Inner::func1("directcall") } 'func1 "directcall" ==> z:,"ab"ccc,99,{
 #### Test log_call using the fallback default fmt_object ####
 delete $Inner::SpreadsheetEdit_Log_Options{fmt_object};
 
-my $obj_xx = Outer->new("purple");
+my $obj_xx = Outer->new("obj_xx");
 checklog { $obj_xx->meth_noretval; } qr/<\d{3,}:[\da-fA-F]{3,}>\.meth_noretval/;
 checklog { $obj_xx->meth_noretval; } qr/\.meth_noretval/;
 checklog { $obj2->meth_1retval; } qr/<\d{3,}:[\da-fA-F]{3,}>\.meth_1retval\(\) ==> 42/;
@@ -153,39 +158,45 @@ foreach my $import_arg (":nocolor",":color") {
     }
   }
 
-  { my $obj = Outer->new("btw"); # equivalent to btwN 0,...
+  { my $out = my_capture_merged { Inner::btw("Test btw call ($import_arg)") }; note $out; };
+
+
+  { my $obj = Outer->new("btw_test"); # equivalent to btwN 0,...
     my $explno = (__LINE__)+1;
     checklog { $obj->doeval('btw "FOO"') }  qr{
-                # pfx is lno/fname/pkg/package
-                1/\(eval\ \d+\)/Inner/Inner:\ ${color_re}FOO${color_re}
+                # NOTE: The custom prefix is 'l=$lno/fn=$fname/pk=$pkg/p=$package'
+                l=1/fn=\(eval\ \d+\)/pk=Inner/p=Inner:\ ${color_re}FOO${color_re}
              }sx, "btw test (${import_arg})", "NOHEAD" ;
   }
-  { my $obj = Outer->new("btwN3");
+  { my $obj = Outer->new("btwN3_test");
     my $explno = (__LINE__)+1;
     checklog { $obj->doeval('btwN 3,"FOO"') }  qr{
                 # something like 141/90_Log.t/main/main««: FOO
-                ${explno}/$myFILE_basename/main/main[^\r\n\/]*:\ ${color_re}FOO${color_re}
+                l=${explno}/fn=$myFILE_basename/pk=main/p=main[^\r\n\/]*:\ ${color_re}FOO${color_re}
              }sx, "btwN 3,... (${import_arg})", "NOHEAD" ;
   }
-  { my $obj = Outer->new("btwNslash2");
+  { my $obj = Outer->new("btwNslash2_test");
     my $explno = (__LINE__)+1;
     checklog { $obj->doeval('btwN \2, "FOO"') }  qr{
-                1/\(eval\ \d+\)/Inner/Inner
-                .*? \d+/$myFILE_basename/Inner/Inner:\ ${color_re}FOO${color_re}
+                # Note: Now the outermost frame is first
+                l=\d+/fn=$myFILE_basename/pk=Inner/p=Inner\
+                .*?
+                l=1/fn=\(eval\ \d+\)/pk=Inner/p=Inner:\ ${color_re}FOO${color_re}
              }sx,
              "btwN \\2,... (${import_arg})",
              "NOHEAD"
               ;
   }
-  { my $obj = Outer->new("btwbt");
+  { my $obj = Outer->new("btwbt_test");
     my $explno = (__LINE__)+1;
     checklog { $obj->doeval('btwbt "FOO"') }  qr{
-                # pfx is lno/fname/pkg/package
-                1/\(eval\ \d+\)/Inner/Inner .*? \d+/$myFILE_basename/Inner/Inner
-                .*? \d+/$myFILE_basename/Outer/Outer
-                .*? \d+/$myFILE_basename/main/main
+                l=$explno/fn=$myFILE_basename/pk=main/p=main\
                 .* # Capture::Tiny stuff
-                  $explno/$myFILE_basename/main/main:\ ${color_re}FOO${color_re}
+                l=$checklog_callback_lno/fn=$myFILE_basename/pk=main/p=main\
+                .*?
+                l=\d+/fn=$myFILE_basename/pk=Outer/p=Outer\
+                .*?
+                l=1/fn=\(eval\ \d+\)/pk=Inner/p=Inner:\ ${color_re}FOO${color_re}
              }sx,
              "btwbt test (${import_arg})",
              "NOHEAD"

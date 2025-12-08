@@ -58,11 +58,15 @@ sub colorize($$) {
   my sub _getcode($;$) {
     my ($name, $tput_args) = @_;
     unless (exists $codes->{$name}) {
-      $tput_args //= $name;
-      $codes->{$name} = `tput $tput_args 2>/dev/null`;
-      $codes->{$name} = undef if $? != 0;
+      if ($ENV{NO_COLOR}) {
+        $codes->{$name} = undef;
+      } else {
+        $tput_args //= $name;
+        $codes->{$name} = `tput $tput_args 2>/dev/null`;
+        $codes->{$name} = undef if $? != 0;
+      }
     }
-    return $codes->{$name} // die("terminal does not support $name");
+    return $codes->{$name} // die("no color ($name)");
   }
   my ($color_start, $color_end);
   eval {
@@ -78,13 +82,14 @@ sub colorize($$) {
     $color_end = _getcode("sgr0");
   };
   if ($@) {
-    return $str if $@ =~ /terminal/; # not impl for current terminal
+    return $str if $@ =~ /no color/; # disabled or TERM does not support it.
     die $@;
   }
   my @chunks = map{ $color_start.$_.$color_end } split /\R/, $str, -1;
   return join "\n", @chunks;
 }
 
+use constant DEFAULT_PKG_VARNAME => 'pkg_colon'; # or 'pkg_space'
 sub import {
   my $class = shift;
   my $pkg = caller;
@@ -93,7 +98,7 @@ sub import {
   foreach (@_) {
     local $_ = $_; # mutable copy
     if (/btw/ && ($first_pkg//=$pkg) ne $pkg) {
-      $default_pfx = '${pkg_space}$lno'; # show package if used in multiple
+      $default_pfx = '${'.DEFAULT_PKG_VARNAME.'}$lno'; # show package if used in multiple
     }
     # Generate customized version of btwN() (called by btw) which uses an
     # arbitrary prefix expression.  The expression is eval'd each time,
@@ -120,13 +125,12 @@ sub import {
   goto &Exporter::import
 }#import
 
-
 sub _btwTN($$@) {
   my ($pfxexpr, $N, @strings) = @_;
 #die dvis '## TEX _btwTN: $pfxexpr $N\n';
   local $@;
-  local $_ = join("", @strings);
   $pfxexpr = $default_pfx if $pfxexpr eq "__DEFAULT__";
+  local $_ = join("", @strings);
   s/\n\z//s;
   my @levels;
   my $sep = ",";
@@ -135,33 +139,61 @@ sub _btwTN($$@) {
   }
   elsif (ref($N) eq 'SCALAR' && defined($$N) && $$N >= 1) {
     @levels = 0..($$N-1); # mini-traceback
-    #$sep = "<";
-    #$sep = " ← ";
-    #$sep = " ⇽ ";
-    #$sep = " « "; # « exists in both Unicode and latin1
-    $sep = " ⇐ ";
+    #$sep = ">";
+    #$sep = " → ";
+    #$sep = " ⇢ ";
+    #$sep = " » "; # « exists in both Unicode and latin1
+    $sep = " ⇒ ";
   }
-  elsif (ref($N) eq 'ARRAY' && all{defined} @$N) {
+  elsif (ref($N) eq 'ARRAY' && @$N > 0 && all{defined} @$N) {
     @levels = sort { $a <=> $b } @$N;
-    $sep = " ⇐ " if $#levels == ($levels[-1] - $levels[0]);
+    $sep = " ⇒ " if $#levels == ($levels[-1] - $levels[0]);
   }
   else {
-    confess "Invalid N arg to btwN: $N"
+    carp "Invalid N arg to btwN: ${\vis($N)}\n";
+    @levels = 0..99; # mini-traceback
   }
+
+  my @caller_data;
+  my ($uniq_pkgtails, $uniq_fnames, $all_same_pkg) = (1, 1, 1);
+  { my (%pkgtail2full, %fname2full, $prev_package);
+    foreach my $n (@levels) {
+      my ($package, $path, $lno) = caller($n);
+      last unless defined $package;
+      confess dvis '$n $package $path $lno' unless defined $lno; # can this happen?
+      $all_same_pkg = 0 if $package ne ($prev_package //= $package);
+      my $pkg = ($package =~ s/.*:://r);
+      $uniq_pkgtails = 0 if ($pkgtail2full{$pkg} //= $package) ne $package;
+      (my $fname = $path) =~ s/.*[\\\/]//;
+      $fname =~ s/\.pm$//;
+      $uniq_fnames = 0 if ($fname2full{$fname} //= $path) ne $path;
+      push @caller_data, [$package, $pkg, $path, $fname, $lno]
+    }
+  }
+  unless ($all_same_pkg) {
+    if ($pfxexpr !~ /\$\{?(?:pkg|package)/) {  # \}
+      $pfxexpr = '${'.DEFAULT_PKG_VARNAME.'}'.$pfxexpr;  # force pkg to be shown
+    }
+  }
+  #warn dvis '###BBB $pfxexpr $uniq_pkgtails, $uniq_fnames, $all_same_pkg\n       @caller_data\n';
   my $pfx = "";
-  foreach my $n (@levels) {
-    my ($package, $path, $lno) = caller($n);
-    next unless defined $lno;
-    (my $fname = $path) =~ s/.*[\\\/]//;
-    $fname =~ s/\.pm$//;
-    my $pkg = ($package =~ s/.*:://r);
-    my $pkg_space = $package eq "main" ? "" : "$pkg ";
+  my $prev_pkg;
+  foreach (reverse @caller_data) { # Show outermost frame on the left
+    my ($package, $pkg, $path, $fname, $lno) = @$_;
+    $pkg = $package unless $uniq_pkgtails;
+    $fname = $path unless $uniq_fnames;
+    my $pkg_space = ($package eq "main" && $all_same_pkg) ? "" : "$pkg ";
+    if ($prev_pkg && $pkg eq $prev_pkg) {
+      $pkg_space = "" # Omit pkg for successive frames in same pkg
+    }
+    (my $pkg_colon = $pkg_space) =~ s/ /:/;
+    $prev_pkg = $pkg;
     my $s = eval qq< qq<${pfxexpr}> >;
     croak "ERROR IN btw prefix '$pfxexpr': $@" if $@;
     $pfx .= $sep if $pfx;
     $pfx .= $s;
   }
-  if (ref($N) eq "") {
+  if (ref($N) eq "") { # showing just one frame
     foreach (2..$N) { $pfx .= "«" }
   }
   my $fh = _getoptions()->{logdest};
@@ -630,11 +662,12 @@ The import tag B<:btw=PFX> imports customized
 C<btw()>, C<btwN()> and C<btwbt()> functions which prefix
 messages with an arbitrary prefix B<PFX>
 which may
-contain I<$lno> I<$path> I<$fname> I<$package> I<$pkg> or I<$pkg_space>
+contain I<$lno> I<$path> I<$fname> I<$package> I<$pkg> I<$pkg_space> or I<$pkg_colon>
 to interpolate respectively
 the calling line number, file path, file basename,
 package name, S<abbreviated package name (*:: removed).>
-or abbrev. package name followed by a space, or nothing if the package is "main".
+or abbrev. package name followed by a space or colon.
+Package names will be omitted if all frames are in package "main".
 
 Import tag B<:nocolor> prevents colorizing.
 By default C<btw> and C<oops> messages are colorized if the terminal allows.
