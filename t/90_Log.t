@@ -6,12 +6,14 @@ use t_TestCommon # Test2::V0 etc.
   qw/t_like t_ok my_capture my_capture_merged $silent $verbose $debug/;
 use File::Which qw/which/;
 
+my $SP = "\\ "; # for regex under /x
+
 package Inner;
 our @ISA = ('Outer');
 use Data::Dumper::Interp;
+
 use Spreadsheet::Edit::Log
-  qw/fmt_call log_call nearest_call abbrev_call_fn_ln_subname/,
-  ':btw=l=$lno/fn=$fname/pk=$pkg/p=$package';
+  qw/fmt_call log_call nearest_call abbrev_call_fn_ln_subname :btw/;
 
 sub new { my $class=shift; bless {tag => $_[0]}, $class }
 sub get { my $self=shift; $self->{tag} }
@@ -59,10 +61,11 @@ sub meth_noretval    { my $self=shift; $self->{inner}->_pvt_noretval(@_); }
 sub meth_1retval     { my $self=shift; $self->{inner}->_pvt_1retval(@_); }
 sub meth_multiretval { my $self=shift; $self->{inner}->_pvt_multiretval(@_); }
 sub doeval           { my $self=shift; $self->{inner}->doeval(@_) }
-sub xxxtest           { my $self=shift; $self->{inner}->xxxtest(@_) }
+sub xxxtest          { my $self=shift; $self->{inner}->xxxtest(@_) }
 
 package main;
-use Spreadsheet::Edit::Log qw/nearest_call abbrev_call_fn_ln_subname/;
+use Spreadsheet::Edit::Log
+  qw/fmt_call log_call nearest_call abbrev_call_fn_ln_subname :btw/;
 my $myFILE_basename = basename(__FILE__);
 
 my $obj = Outer->new("obj");
@@ -147,60 +150,76 @@ my $have_color_terminal = do{
   }
 };
 
-foreach my $import_arg (":nocolor",":color") {
-  Spreadsheet::Edit::Log->import($import_arg);
+foreach my $with_color (0, 1) {
+  local $ENV{NO_COLOR} = !$with_color;
+  $Spreadsheet::Edit::Log::colorcodes = undef;  # force re-check of ENV{NO_COLOR}
+  my $color_onoff = $with_color ? "colorized" : "no color";
   my $color_re = "";
-  if ($import_arg eq ':color') {
+  if ($with_color) {
     $color_re = qr/\033.*?m/;
     unless ($have_color_terminal) {
-      note "Skipping btw tests with :color\n";
+      note "Skipping btw tests of colorize\n";
       next
     }
   }
 
-  { my $out = my_capture_merged { Inner::btw("Test btw call ($import_arg)") }; note $out; };
-
+  { my $out = my_capture_merged { Inner::btw("Test btw call ($color_onoff)") };
+  }
 
   { my $obj = Outer->new("btw_test"); # equivalent to btwN 0,...
-    my $explno = (__LINE__)+1;
-    checklog { $obj->doeval('btw "FOO"') }  qr{
-                # NOTE: The custom prefix is 'l=$lno/fn=$fname/pk=$pkg/p=$package'
-                l=1/fn=\(eval\ \d+\)/pk=Inner/p=Inner:\ ${color_re}FOO${color_re}
-             }sx, "btw test (${import_arg})", "NOHEAD" ;
+    my $explno = __LINE__ + 1;
+    checklog { $obj->doeval('btwbt "FOO-1"') } qr{^
+                              (?:main:)?${explno}${SP}
+                              .* \d+${SP}
+                              .*  #capture internals
+                              .* (?:main:)?${checklog_callback_lno}${SP}
+                              .* \d+${SP}
+                              .* \d+${SP}
+                              .* \d+${SP}
+                              .* \(eval${SP}\d+\)\D*1${SP}?[^\w\s]${SP}
+                              ${color_re}FOO-1${color_re} }msx,
+                            "btwbt-FOO-1 (${color_onoff})", "NOHEAD" ;
   }
+
   { my $obj = Outer->new("btwN3_test");
-    my $explno = (__LINE__)+1;
-    checklog { $obj->doeval('btwN 3,"FOO"') }  qr{
-                # something like 141/90_Log.t/main/main««: FOO
-                l=${explno}/fn=$myFILE_basename/pk=main/p=main[^\r\n\/]*:\ ${color_re}FOO${color_re}
-             }sx, "btwN 3,... (${import_arg})", "NOHEAD" ;
+    my $explno = __LINE__ + 1;
+    checklog { $obj->doeval('btwN 3,"FOO-2"') } qr{^
+                              (?:main:)?${explno}${SP}?[^\w\s]${SP}
+                              ${color_re}FOO-2${color_re} }msx,
+                            "btwN 3,... (${color_onoff})", "NOHEAD" ;
   }
+
   { my $obj = Outer->new("btwNslash2_test");
+    # btwN \2,... means 2-level backtrace
     my $explno = (__LINE__)+1;
-    checklog { $obj->doeval('btwN \2, "FOO"') }  qr{
-                # Note: Now the outermost frame is first
-                l=\d+/fn=$myFILE_basename/pk=Inner/p=Inner\
-                .*?
-                l=1/fn=\(eval\ \d+\)/pk=Inner/p=Inner:\ ${color_re}FOO${color_re}
-             }sx,
-             "btwN \\2,... (${import_arg})",
-             "NOHEAD"
-              ;
+    checklog { $obj->doeval('btwN \2, "FOO-3"') }  qr{^
+                              Inner:\d+
+                              .* \(eval${SP}\d+\)\D*1${SP}?[^\w\s]${SP}
+                              ${color_re}FOO-3${color_re} }msx,
+             "btwN \\2,... (${color_onoff})", "NOHEAD" ;
   }
-  { my $obj = Outer->new("btwbt_test");
+
+  { my $obj = Outer->new("btwNslash3_test");
+    # btwN \3,... means 3-level backtrace
     my $explno = (__LINE__)+1;
-    checklog { $obj->doeval('btwbt "FOO"') }  qr{
-                l=$explno/fn=$myFILE_basename/pk=main/p=main\
-                .* # Capture::Tiny stuff
-                l=$checklog_callback_lno/fn=$myFILE_basename/pk=main/p=main\
-                .*?
-                l=\d+/fn=$myFILE_basename/pk=Outer/p=Outer\
-                .*?
-                l=1/fn=\(eval\ \d+\)/pk=Inner/p=Inner:\ ${color_re}FOO${color_re}
-             }sx,
-             "btwbt test (${import_arg})",
-             "NOHEAD"
-              ;
+    checklog { $obj->doeval('btwN \3, "FOO-4"') }  qr{^
+                              Outer:\d+${SP}
+                              .* Inner:\d+${SP}
+                              .* \(eval${SP}\d+\)\D*1${SP}?[^\w\s]${SP}
+                              ${color_re}FOO-4${color_re} }msx,
+             "btwN \\3,... (${color_onoff})", "NOHEAD" ;
+  }
+
+  { my $obj = Outer->new("btwNslash4_test");
+    # btwN \4,... means 4-level backtrace
+    my $explno = (__LINE__)+1;
+    checklog { $obj->doeval('btwN \4, "FOO-5"') }  qr{^
+                              ^(?:main:)?${explno}${SP}
+                              .* Outer:\d+${SP}
+                              .* Inner:\d+${SP}
+                              .* \(eval${SP}\d+\)\D*1${SP}?[^\w\s]${SP}
+                              ${color_re}FOO-5${color_re} }msx,
+             "btwN \\4,... (${color_onoff})", "NOHEAD" ;
   }
 }
 

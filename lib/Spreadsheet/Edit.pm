@@ -206,8 +206,8 @@ sub _generateHash_crow {  # %crow indexes cells in the current row during apply
 #
 ########################### End of Exporting stuff ##########################
 
-use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall oops/,
-                           ':btw=SE${lno}:' ;
+use Spreadsheet::Edit::Log qw/log_call fmt_call log_methcall fmt_methcall oops :btw/;
+our %SpreadsheetEdit_Log_Options = ( subst_pkg => "SE" );
 
 use Data::Dumper ();
 use Data::Dumper::Interp 7.003 qw/:all/;
