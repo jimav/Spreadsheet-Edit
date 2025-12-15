@@ -254,6 +254,7 @@ sub get_effective_logdest() { _getoptions->{logdest} }
 sub _fmt_list($) {
   my @items = ref($_[0]) eq 'ARRAY' ? @{$_[0]} : ($_[0]);
   oops if wantarray;
+  return "()" if @items==0;
   if (my $is_sequential = (@items >= 4)) {
     my $seq;
     foreach(@items) {
