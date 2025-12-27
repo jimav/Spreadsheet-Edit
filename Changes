@@ -1,5 +1,8 @@
 Changes to Spreadsheet::Edit, Spreadsheet::Edit::IO, and/or Spreadsheet::Edit::Log
 
+1001.002 : (IN PROGRESS)
+           btwbt: More compact mini-backtrace
+           log_call: Show empty list result as () instead of nothing.
 1001.001 : btwbt mini-tracebacks now show outer-most frame first.
            *Removed* support for user-specified btw prefix strings
            (lots of complexity for mostly-imaginary real benefits).

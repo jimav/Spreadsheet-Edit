@@ -136,7 +136,8 @@ sub btwN($@) {
   #my $sep = " → ";
   #my $sep = " ⇢ ";
   #my $sep = " » "; # « exists in both Unicode and latin1
-  my $sep = " ⇒ ";
+  #my $sep = " ⇒ ";
+  my $sep = "»";
   my @levels;
   if (ref($N) eq "") {
     @levels = ($N);
@@ -191,6 +192,10 @@ sub btwN($@) {
     my $lno = $caller->[2];
     my $path = $caller->[1];
     my $s;
+    # Show the filename if it does not correspond to the package e.g. "eval..."
+    if ($fname ne "${pkg}.pm" && $path ne $0) {
+      $pkg = $path;
+    }
     if ($pkg_obvious || (defined($prev_pkg) && $pkg eq $prev_pkg)) {
       $s = $lno;
     } else {
@@ -199,11 +204,7 @@ sub btwN($@) {
       if (my $h = \%{"${package}::SpreadsheetEdit_Log_Options"}) {
         $pkg = $h->{subst_pkg} if $h->{subst_pkg};
       }
-      $s = "${pkg}:$lno";
-    }
-    if ($fname ne "${pkg}.pm" && $path ne $0) {
-#warn dvis '###FNCRAM $pkg $fname\n';
-      $s = "[${path}]".$s;
+      $s = $s ? " ${pkg}:$lno" : "${pkg}:$lno"
     }
     $pfx .= $sep if $pfx;
     if (defined($prev_n)) {
