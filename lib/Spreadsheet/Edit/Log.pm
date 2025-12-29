@@ -24,7 +24,7 @@ use Exporter 5.57 ();
 our @EXPORT = qw/fmt_call log_call fmt_methcall log_methcall
                  nearest_call abbrev_call_fn_ln_subname/;
 
-our @EXPORT_OK = qw/btw btwN btwbt oops set_logdest
+our @EXPORT_OK = qw/btw btwN btwbt btwN_str oops set_logdest
                     colorize ERROR_COLOR WARN_COLOR BOLD_COLOR SUCCESS_COLOR/;
 
 my %backup_defaults = (
@@ -114,7 +114,7 @@ sub import {
         if keys(%btw_importing_pkgs) && !$btw_importing_pkgs{$pkg};
       $btw_importing_pkgs{$pkg}++;
       if (/^:btw$/) {
-        push @remaining_args, qw/btw btwN btwbt/;
+        push @remaining_args, qw/btw btwN btwbt btwN_str/;
         next;
       }
     }
@@ -125,9 +125,8 @@ sub import {
   goto &Exporter::import
 }#import
 
-sub btwN($@) {
+sub _btwN_str_back1($@) { # does not show top call frame
   my ($N, @strings) = @_;
-#warn dvis '##btwN $N @strings\n';
   local $@;
   local $_ = join("", @strings);
   s/\n\z//s;
@@ -160,7 +159,8 @@ sub btwN($@) {
 
   { my (%pkgtail2full, %fname2full, $prev_package);
     my ($uniq_pkgtails, $uniq_fnames, $all_same_package) = (1, 1, 1);
-    foreach my $n (@levels) {
+    foreach (@levels) {
+      my $n = $_ + 1; # hide call to this helper func
       my @c = caller($n);
       my ($package, $path) = @c[0,1];
       last if !defined $package;
@@ -184,6 +184,8 @@ sub btwN($@) {
   }
 
   ##FIXME: Use only ASCII characters if terminal is not UTF enabled? Cf DDI
+  ## --or-- provide an environment variable?
+  ## (for when output must go through tools which barf on "wide" chars)
 
   my $pfx = "";
   my ($prev_pkg, $prev_n);
@@ -217,10 +219,19 @@ sub btwN($@) {
   $pfx .= "> ";
 
   $_ = colorize($_, WARN_COLOR);
-  my $msg = "${pfx}${_}\n";
+  "${pfx}${_}";
+}#_btwN_str_back1
+
+sub btwN_str($@) { # Just the message string, sans final newline
+  my ($N, @strings) = @_;
+  _btwN_str_back1($N, @strings);
+}
+sub btwN($@) {
+  my ($N, @strings) = @_;
+  my $msg = _btwN_str_back1($N, @strings);
   my $fh = _getoptions()->{logdest};
-  print $fh $msg;
-}#btwN
+  print $fh $msg, "\n";
+}
 
 sub btw(@) { @_ = (0, @_); goto &btwN; }
 sub btwbt(@) { @_ = (\99, @_); goto &btwN; }
@@ -492,8 +503,7 @@ C<[INPUTS]> and C<[RESULTS]> are each a ref to an array of items (or
 a single non-aref item), used to form comma-separated lists.
 
 Each item is formatted similar to I<Data::Dumper>, i.e. strings are "quoted"
-and complex structures serialized; printable Unicode characters are shown as
-themselves (rather than hex escapes)
+and complex structures are serialized
 
 ... with two exceptions:
 
@@ -717,7 +727,7 @@ Jim Avera (jim.avera gmail)
 
 Public Domain or CC0
 
-=for Pod::Coverage oops
+=for Pod::Coverage oops btwN_str
 
 =cut
 
