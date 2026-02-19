@@ -51,29 +51,29 @@ sub colorize($$) {
   my ($str, $colortype) = @_;
   return $str
     if $ENV{NO_COLOR};  # check every time
-  my sub _getcode($$) {
-    my ($name, $tput_args) = @_;
-    unless (exists $colorcodes->{$name}) {
-      $colorcodes->{$name} = `tput $tput_args 2>/dev/null`;
-      $colorcodes->{$name} = undef if $? != 0;
+  my sub _getcode($) {
+    my ($tput_args) = @_;
+    unless (exists $colorcodes->{$tput_args}) {
+      $colorcodes->{$tput_args} = `tput $tput_args 2>/dev/null`;
+      $colorcodes->{$tput_args} = undef if $? != 0;
     }
-    return $colorcodes->{$name} // die("no color ($name)");
+    return $colorcodes->{$tput_args} // die "FAILED: tput $tput_args (export NO_COLOR=1 to bypass)";
   }
   my ($color_start, $color_end);
   eval {
     # The basic colors 0-7 => black,red,green,yellow,blue,magenta,cyan,white
     # ("white" is often really light grey)
     $color_start =
-      $colortype eq BOLD_COLOR    ? _getcode("bold", "bold") :
-      $colortype eq WARN_COLOR    ? _getcode("boldyellow", "setaf 3 bold") :
-      $colortype eq ERROR_COLOR   ? _getcode("boldred", "setaf 1 bold") :
-      $colortype eq SUCCESS_COLOR ? _getcode("boldgreen", "setaf 2 bold") :
+      $colortype eq BOLD_COLOR    ? _getcode("bold") :
+      $colortype eq WARN_COLOR    ? _getcode("setaf 3 bold") :   # bold yellow
+      $colortype eq ERROR_COLOR   ? _getcode("setaf 1 bold") :   # bold red
+      $colortype eq SUCCESS_COLOR ? _getcode("setaf 2 bold") :   # bold green
       croak "unknown message type '$colortype'"
       ;
-    $color_end = _getcode("sgr0", "sgr0");
+    $color_end = _getcode("sgr0");
   };
   if ($@) {
-    return $str if $@ =~ /no color/; # disabled or TERM does not support it.
+    return $str if $@ =~ /FAILED: tput/; # disabled or TERM does not support it.
     die $@;
   }
   my @chunks = map{ $_ eq "" ? "" : $color_start.$_.$color_end }
@@ -85,7 +85,7 @@ sub oops(@) {
   my @args = @_;
   foreach (@args) { $_ = colorize($_, ERROR_COLOR); }
   my $pkg = caller;
-  my $pfx = "\nOOPS";
+  my $pfx = "\n".colorize("OOPS", ERROR_COLOR);
   #$pfx .= " in pkg '$pkg'" unless $pkg eq 'main';
   $pfx .= ": ";
   if (defined(&Spreadsheet::Edit::logmsg)) {
