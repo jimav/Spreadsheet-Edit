@@ -88,6 +88,7 @@ our @EXPORT = qw/silent
                  rawstr showstr showcontrols displaystr
                  show_white show_empty_string
                  fmt_codestring
+                 verif_warning
                  verif_no_internals_mentioned
                  insert_loc_in_evalstr verif_eval_err
                  tdir
@@ -775,6 +776,24 @@ sub mycheck($$@) {
         goto &mycheckeq_literal
       }
     }
+  }
+}
+
+# USAGE: verif_warning { code... } qr/.../  [,"optional description"]
+#                                 ^ NO COMMA!
+sub verif_warning(&$) {
+  my ($code, $expected, $desc) = @_;
+  local $_;  # preserve $1 etc. for caller
+  my $got = "";
+  local $SIG{__WARN__} = sub { $got .= join("", @_); };
+  $code->();
+  unless ($got =~ qr/$expected/) {
+    my @caller = caller(0);
+    my $ln = $caller[2];
+    my $fn = $caller[1];
+    confess "expected warning did not occur at $fn line $ln\n",
+            "  (expected $expected)\n",
+            "  (got '${got}')\n";
   }
 }
 

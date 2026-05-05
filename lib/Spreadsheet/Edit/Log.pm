@@ -47,18 +47,18 @@ use constant SUCCESS_COLOR  => "succ";
 
 # Insert escapes to colorize text, provided the terminal supports ansi escapes
 our $colorcodes;
+sub _getcode($) {
+  my ($tput_args) = @_;
+  unless (exists $colorcodes->{$tput_args}) {
+    $colorcodes->{$tput_args} = `tput $tput_args 2>/dev/null`;
+    $colorcodes->{$tput_args} = undef if $? != 0;
+  }
+  return $colorcodes->{$tput_args} // die "FAILED: tput $tput_args (export NO_COLOR=1 to bypass)";
+}
 sub colorize($$) {
   my ($str, $colortype) = @_;
   return $str
     if $ENV{NO_COLOR};  # check every time
-  my sub _getcode($) {
-    my ($tput_args) = @_;
-    unless (exists $colorcodes->{$tput_args}) {
-      $colorcodes->{$tput_args} = `tput $tput_args 2>/dev/null`;
-      $colorcodes->{$tput_args} = undef if $? != 0;
-    }
-    return $colorcodes->{$tput_args} // die "FAILED: tput $tput_args (export NO_COLOR=1 to bypass)";
-  }
   my ($color_start, $color_end);
   eval {
     # The basic colors 0-7 => black,red,green,yellow,blue,magenta,cyan,white
@@ -77,7 +77,7 @@ sub colorize($$) {
     die $@;
   }
   my @chunks = map{ $_ eq "" ? "" : $color_start.$_.$color_end }
-               split /\R/, $str, -1;
+               split /\R/s, $str, -1;
   return join "\n", @chunks;
 }
 
