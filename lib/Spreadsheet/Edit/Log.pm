@@ -25,7 +25,8 @@ our @EXPORT = qw/fmt_call log_call fmt_methcall log_methcall
                  nearest_call abbrev_call_fn_ln_subname/;
 
 our @EXPORT_OK = qw/btw btwN btwbt btwN_str oops set_logdest
-                    colorize ERROR_COLOR WARN_COLOR BOLD_COLOR SUCCESS_COLOR/;
+                    colorize ERROR_COLOR WARN_COLOR BOLD_COLOR SUCCESS_COLOR
+                    _can_colorize/;
 
 my %backup_defaults = (
   logdest         => \*STDERR,
@@ -79,6 +80,12 @@ sub colorize($$) {
   my @chunks = map{ $_ eq "" ? "" : $color_start.$_.$color_end }
                split /\R/s, $str, -1;
   return join "\n", @chunks;
+}
+sub _can_colorize() {  # used by test scripts
+  state $yes_we_can = do{
+    local $ENV{NO_COLOR} = 0;
+    colorize("foo bar\nbaz", ERROR_COLOR) =~ /\033/;
+  };
 }
 
 sub oops(@) {
