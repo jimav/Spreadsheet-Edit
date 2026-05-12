@@ -1073,6 +1073,7 @@ sub _convert_using_ssconvert($$$) {
 # INTERNAL USE ONLY: In array  context, returns (filepath, SHEETNAME or undef)
 sub sheetname_from_spec($) {
   my $spec = shift;
+  return undef if $spec eq ""; #caller will hopefully diag bogus path
   local $_;
   my $p = path($spec);
   my $parent = $p->parent;
@@ -1132,6 +1133,7 @@ sub _process_args($;@) {
   } else {
     $opts{inpath} = $leading_inpath // croak "No inpath was specified";
   }
+  croak "Input path is \"\"\n" if $opts{inpath} eq "";
   $opts{verbose}=1 if $opts{debug};
 
   # inpath or outpath may have "!sheetname" appended (or alternate syntaxes),
